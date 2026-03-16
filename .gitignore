@@ -6,4 +6,5 @@ dist/
 .vscode/
 .idea/
 .trae/
+storage/*
 
