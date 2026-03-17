@@ -7,7 +7,14 @@ const FORWARDING_INTERVAL_MS = parseInt(
 	process.env.FORWARDING_INTERVAL_MS ?? "1000",
 	10,
 );
+const SERVER_NAME = process.env.SERVER_NAME ?? "";
 const STORAGE_DIR = path.resolve(process.cwd(), "storage");
+
+interface ForwardingChannel {
+	tenant_id: number;
+	from_account: string;
+	to_account: string;
+}
 
 export class TenantForwardingScheduler {
 	private timer: NodeJS.Timeout | null = null;
@@ -42,12 +49,28 @@ export class TenantForwardingScheduler {
 
 		try {
 			const db = DatabaseClient.getInstance();
-			const tenants = await db.execute((prisma) =>
-				prisma.tenant.findMany({ select: { id: true } }),
+
+			const rows = await db.execute(
+				(prisma) =>
+					prisma.message.findMany({
+						where: {
+							status: { not: "forwarded" },
+							to_account: { not: null },
+							tenant: { server_name: SERVER_NAME },
+						},
+						select: { tenant_id: true, from_account: true, to_account: true },
+						distinct: ["tenant_id", "from_account", "to_account"],
+					}) as Promise<{ tenant_id: number; from_account: string; to_account: string | null }[]>,
+			);
+
+			const channels: ForwardingChannel[] = rows.filter(
+				(r): r is ForwardingChannel => r.to_account !== null,
 			);
 
 			await Promise.all(
-				tenants.map((t) => this.processTenant(t.id)),
+				channels.map((ch) =>
+					this.processChannel(ch.tenant_id, ch.from_account, ch.to_account),
+				),
 			);
 		} catch (error) {
 			console.error("[ForwardingScheduler] Tick error:", error);
@@ -56,31 +79,49 @@ export class TenantForwardingScheduler {
 		}
 	}
 
-	private async processTenant(tenantId: number): Promise<void> {
+	private async processChannel(
+		tenantId: number,
+		fromAccount: string,
+		toAccount: string,
+	): Promise<void> {
 		try {
 			const db = DatabaseClient.getInstance();
 
-			const state = await db.execute((prisma) =>
-				prisma.tenantMessageState.upsert({
-					where: { tenant_id: tenantId },
-					update: {},
-					create: {
-						tenant_id: tenantId,
-						last_forwarded_id: BigInt(0),
-					},
-				}),
+			const state = await db.execute(
+				(prisma) =>
+					prisma.tenantMessageState.upsert({
+						where: {
+							tenant_id_from_account_to_account: {
+								tenant_id: tenantId,
+								from_account: fromAccount,
+								to_account: toAccount,
+							},
+						},
+						update: {},
+						create: {
+							tenant_id: tenantId,
+							from_account: fromAccount,
+							to_account: toAccount,
+							last_forwarded_id: BigInt(0),
+						},
+					}) as Promise<{ last_forwarded_id: bigint }>,
 			);
 
-			let forwarded = true;
-			while (forwarded) {
-				forwarded = await this.forwardNext(tenantId, state.last_forwarded_id);
-				if (forwarded) {
+			let advanced = true;
+			while (advanced) {
+				advanced = await this.forwardNext(
+					tenantId,
+					fromAccount,
+					toAccount,
+					state.last_forwarded_id,
+				);
+				if (advanced) {
 					state.last_forwarded_id++;
 				}
 			}
 		} catch (error) {
 			console.error(
-				`[ForwardingScheduler] Error for tenant ${tenantId}:`,
+				`[ForwardingScheduler] Error for tenant ${tenantId} ${fromAccount} → ${toAccount}:`,
 				error,
 			);
 		}
@@ -88,6 +129,8 @@ export class TenantForwardingScheduler {
 
 	private async forwardNext(
 		tenantId: number,
+		fromAccount: string,
+		toAccount: string,
 		lastForwardedId: bigint,
 	): Promise<boolean> {
 		const db = DatabaseClient.getInstance();
@@ -96,6 +139,8 @@ export class TenantForwardingScheduler {
 			const nextMsg = await prisma.message.findFirst({
 				where: {
 					tenant_id: tenantId,
+					from_account: fromAccount,
+					to_account: toAccount,
 					id: { gt: lastForwardedId },
 				},
 				orderBy: { id: "asc" },
@@ -103,6 +148,21 @@ export class TenantForwardingScheduler {
 			});
 
 			if (!nextMsg) return false;
+
+			if (nextMsg.status === "forwarded") {
+				await prisma.tenantMessageState.update({
+					where: {
+						tenant_id_from_account_to_account: {
+							tenant_id: tenantId,
+							from_account: fromAccount,
+							to_account: toAccount,
+						},
+					},
+					data: { last_forwarded_id: nextMsg.id },
+				});
+				return true;
+			}
+
 			if (nextMsg.status !== "downloaded") return false;
 
 			this.writeFinalLog(nextMsg);
@@ -113,13 +173,19 @@ export class TenantForwardingScheduler {
 					data: { status: "forwarded" },
 				}),
 				prisma.tenantMessageState.update({
-					where: { tenant_id: tenantId },
+					where: {
+						tenant_id_from_account_to_account: {
+							tenant_id: tenantId,
+							from_account: fromAccount,
+							to_account: toAccount,
+						},
+					},
 					data: { last_forwarded_id: nextMsg.id },
 				}),
 			]);
 
 			console.log(
-				`[ForwardingScheduler] Forwarded message ${nextMsg.id} for tenant ${tenantId}`,
+				`[ForwardingScheduler] Forwarded message ${nextMsg.id} for tenant ${tenantId} ${fromAccount} → ${toAccount}`,
 			);
 			return true;
 		});

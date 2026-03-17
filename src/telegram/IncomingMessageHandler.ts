@@ -91,6 +91,10 @@ export class IncomingMessageHandler {
 
 		const hasAttachments = mediaList.length > 0;
 
+		// from_account = actual sender; fall back to chatId for channel posts (no fromId)
+		const fromAccount = this.extractPeerId(firstMsg.fromId) ?? chatId;
+		const rawPayload = this.serializeMessages(events);
+
 		const db = DatabaseClient.getInstance();
 		await db.execute(async (prisma) => {
 			return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -99,8 +103,10 @@ export class IncomingMessageHandler {
 						tenant_id: tenantId,
 						telegram_chat_id: chatId,
 						telegram_message_id: firstMsg.id,
-						from_account: this.telegramUserId,
+						from_account: fromAccount,
+						to_account: this.telegramUserId,
 						message: messageText || null,
+						raw_payload: rawPayload,
 						status: hasAttachments ? "pending" : "downloaded",
 					},
 				});
@@ -219,20 +225,37 @@ export class IncomingMessageHandler {
 				return attr.fileName;
 			}
 		}
-		const ext = (doc.mimeType ?? "application/octet-stream").split("/")[1] ?? "bin";
+		const ext =
+			(doc.mimeType ?? "application/octet-stream").split("/")[1] ?? "bin";
 		return `${doc.id}.${ext}`;
+	}
+
+	private extractPeerId(peer: Api.TypePeer | null | undefined): string | null {
+		if (!peer) return null;
+		if (peer instanceof Api.PeerUser) return peer.userId.toString();
+		if (peer instanceof Api.PeerChat) return peer.chatId.toString();
+		if (peer instanceof Api.PeerChannel) return peer.channelId.toString();
+		return null;
+	}
+
+	private serializeMessages(events: NewMessageEvent[]): string {
+		return JSON.stringify(
+			events.map((e) => e.message),
+			(_, value) => (typeof value === "bigint" ? value.toString() : value),
+		);
 	}
 
 	private async resolveTenantId(): Promise<number | null> {
 		const db = DatabaseClient.getInstance();
-		const session = await db.execute((prisma) =>
-			prisma.telegramSession.findFirst({
-				where: {
-					telegram_user_id: this.telegramUserId,
-					status: "active",
-				},
-				select: { tenant_id: true },
-			}) as Promise<{ tenant_id: number } | null>,
+		const session = await db.execute(
+			(prisma) =>
+				prisma.telegramSession.findFirst({
+					where: {
+						telegram_user_id: this.telegramUserId,
+						status: "active",
+					},
+					select: { tenant_id: true },
+				}) as Promise<{ tenant_id: number } | null>,
 		);
 		return session?.tenant_id ?? null;
 	}

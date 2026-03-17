@@ -1,6 +1,7 @@
 import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { IncomingMessageHandler } from "./IncomingMessageHandler";
+import { IncomingReactionHandler } from "./IncomingReactionHandler";
 import { DatabaseClient } from "../database/DatabaseClient";
 import { SessionStatus } from "../database/constants/SessionStatus";
 import { TelegramClientInterface } from "./interface/Telegram";
@@ -30,6 +31,10 @@ export class TelegramClientService implements TelegramClientInterface {
 	private static readonly messageHandlers = new Map<
 		string,
 		IncomingMessageHandler
+	>();
+	private static readonly reactionHandlers = new Map<
+		string,
+		IncomingReactionHandler
 	>();
 
 	// ── Instance State ─────────────────────────────────────────────────
@@ -96,6 +101,11 @@ export class TelegramClientService implements TelegramClientInterface {
 				client,
 				telegramUserId,
 			);
+			TelegramClientService.startReactionHandler(
+				sessionId,
+				client,
+				telegramUserId,
+			);
 		}
 	}
 
@@ -120,6 +130,7 @@ export class TelegramClientService implements TelegramClientInterface {
 	 */
 	static async invalidate(sessionId: string): Promise<void> {
 		TelegramClientService.stopMessageHandler(sessionId);
+		TelegramClientService.stopReactionHandler(sessionId);
 
 		// Delete the session record from the database
 		await DatabaseClient.getInstance().execute((prisma) =>
@@ -212,6 +223,27 @@ export class TelegramClientService implements TelegramClientInterface {
 		if (handler) {
 			handler.stop();
 			TelegramClientService.messageHandlers.delete(sessionId);
+		}
+	}
+
+	private static startReactionHandler(
+		sessionId: string,
+		client: TelegramClientService,
+		telegramUserId: string,
+	): void {
+		const handler = new IncomingReactionHandler(
+			client.getClient(),
+			telegramUserId,
+		);
+		TelegramClientService.reactionHandlers.set(sessionId, handler);
+		handler.start();
+	}
+
+	private static stopReactionHandler(sessionId: string): void {
+		const handler = TelegramClientService.reactionHandlers.get(sessionId);
+		if (handler) {
+			handler.stop();
+			TelegramClientService.reactionHandlers.delete(sessionId);
 		}
 	}
 

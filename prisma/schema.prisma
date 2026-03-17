@@ -22,9 +22,9 @@ model Tenant {
   callback_url     String            @db.Text
   created_at       DateTime          @default(now())
   updated_at       DateTime          @updatedAt
-  telegramSessions TelegramSession[]
-  messages         Message[]
-  tenantMessageState TenantMessageState?
+  telegramSessions    TelegramSession[]
+  messages            Message[]
+  tenantMessageStates TenantMessageState[]
 
   @@map("tenants")
 }
@@ -80,7 +80,9 @@ model Message {
   telegram_chat_id    String        @db.Text
   telegram_message_id Int
   from_account        String        @db.Text
+  to_account          String?       @db.Text
   message             String?       @db.Text
+  raw_payload         String?       @db.Text
   status              MessageStatus @default(pending)
   created_at          DateTime      @default(now())
   updated_at          DateTime      @updatedAt
@@ -88,6 +90,7 @@ model Message {
   attachments         Attachment[]
 
   @@index([tenant_id, id, status])
+  @@index([tenant_id, to_account, id, status])
   @@map("messages")
 }
 
@@ -123,10 +126,14 @@ model DownloadTask {
 }
 
 model TenantMessageState {
-  tenant_id         Int      @id
+  id                Int      @id @default(autoincrement())
+  tenant_id         Int
+  from_account      String   @db.Text
+  to_account        String   @db.Text
   last_forwarded_id BigInt   @default(0)
   updated_at        DateTime @updatedAt
   tenant            Tenant   @relation(fields: [tenant_id], references: [id])
 
+  @@unique([tenant_id, from_account, to_account])
   @@map("tenant_message_state")
 }

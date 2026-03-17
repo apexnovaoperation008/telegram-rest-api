@@ -5,6 +5,7 @@ import bigInt from "big-integer";
 import { Prisma } from "@prisma/client";
 import { DatabaseClient } from "../database/DatabaseClient";
 import { TelegramClientService } from "../telegram/TelegramClientService";
+import { SessionStatus } from "../database/constants/SessionStatus";
 import {
 	RawInput,
 	DownloadTaskRow,
@@ -19,6 +20,7 @@ const DOWNLOAD_TIMEOUT_S = parseInt(
 	process.env.DOWNLOAD_TIMEOUT_SECONDS ?? "600",
 	10,
 );
+const SERVER_NAME = process.env.SERVER_NAME ?? "";
 const POLL_INTERVAL_MS = 500;
 const STALE_CHECK_INTERVAL_MS = 60_000;
 const FILES_DIR = path.resolve(process.cwd(), "storage", "files");
@@ -67,15 +69,26 @@ export class DownloadWorkerService {
 
 	private async claimNextTask(): Promise<DownloadTaskRow | null> {
 		const db = DatabaseClient.getInstance();
+		const workerId = process.pid.toString();
 		const rows = await db.execute<DownloadTaskRow[]>((prisma) =>
 			prisma.$queryRaw`
 				UPDATE download_tasks
 				SET status = 'processing',
 				    started_at = NOW(),
-				    worker_id = ${process.pid.toString()}
+				    worker_id = ${workerId}
 				WHERE id = (
 					SELECT id FROM download_tasks
 					WHERE status = 'pending'
+					AND from_accounts && COALESCE(
+						(
+							SELECT ARRAY_AGG(ts.session_id)
+							FROM telegram_sessions ts
+							JOIN tenants t ON ts.tenant_id = t.id
+							WHERE t.server_name = ${SERVER_NAME}
+							AND ts.status = ${SessionStatus.ACTIVE}
+						),
+						ARRAY[]::TEXT[]
+					)
 					ORDER BY created_at ASC
 					LIMIT 1
 					FOR UPDATE SKIP LOCKED
@@ -252,11 +265,30 @@ export class DownloadWorkerService {
 	private async resetStaleTasks(): Promise<void> {
 		const db = DatabaseClient.getInstance();
 		const cutoff = new Date(Date.now() - DOWNLOAD_TIMEOUT_S * 1000);
+
+		const sessionIds = await db.execute(
+			(prisma) =>
+				prisma.telegramSession
+					.findMany({
+						where: {
+							status: SessionStatus.ACTIVE,
+							tenant: { server_name: SERVER_NAME },
+						},
+						select: { session_id: true },
+					})
+					.then((rows: { session_id: string }[]) =>
+						rows.map((r) => r.session_id),
+					) as Promise<string[]>,
+		);
+
+		if (sessionIds.length === 0) return;
+
 		await db.execute((prisma) =>
 			prisma.downloadTask.updateMany({
 				where: {
 					status: "processing",
 					started_at: { lt: cutoff },
+					from_accounts: { hasSome: sessionIds },
 				},
 				data: {
 					status: "pending",
