@@ -4,7 +4,7 @@
 # ─── Development ─────────────────────────────────────────────────────────────
 FROM node:22-slim AS development
 
-RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y openssl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ CMD ["npm", "run", "dev"]
 # ─── Production ───────────────────────────────────────────────────────────────
 FROM node:22-slim AS production
 
-RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y openssl python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

@@ -22,7 +22,9 @@ model Tenant {
   callback_url     String            @db.Text
   created_at       DateTime          @default(now())
   updated_at       DateTime          @updatedAt
-  telegramSessions TelegramSession[]
+  telegramSessions    TelegramSession[]
+  messages            Message[]
+  tenantMessageStates TenantMessageState[]
 
   @@map("tenants")
 }
@@ -55,4 +57,83 @@ model QueueJob {
 
   @@index([status, created_at])
   @@map("queue_jobs")
+}
+
+// ── Message Pipeline ────────────────────────────────────────────────
+
+enum MessageStatus {
+  pending
+  downloaded
+  forwarded
+}
+
+enum DownloadTaskStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+model Message {
+  id                  BigInt        @id @default(autoincrement())
+  tenant_id           Int
+  telegram_chat_id    String        @db.Text
+  telegram_message_id Int
+  from_account        String        @db.Text
+  to_account          String?       @db.Text
+  message             String?       @db.Text
+  raw_payload         String?       @db.Text
+  status              MessageStatus @default(pending)
+  created_at          DateTime      @default(now())
+  updated_at          DateTime      @updatedAt
+  tenant              Tenant        @relation(fields: [tenant_id], references: [id])
+  attachments         Attachment[]
+
+  @@index([tenant_id, id, status])
+  @@index([tenant_id, to_account, id, status])
+  @@map("messages")
+}
+
+model Attachment {
+  id             BigInt   @id @default(autoincrement())
+  message_id     BigInt
+  file_unique_id String   @db.Text
+  file_type      String   @db.VarChar(50)
+  file_url       String?  @db.Text
+  created_at     DateTime @default(now())
+  message        Message  @relation(fields: [message_id], references: [id], onDelete: Cascade)
+
+  @@index([file_unique_id])
+  @@map("attachments")
+}
+
+model DownloadTask {
+  id             BigInt             @id @default(autoincrement())
+  file_unique_id String             @unique @db.Text
+  status         DownloadTaskStatus @default(pending)
+  file_path      String?            @db.Text
+  file_url       String?            @db.Text
+  file_type      String?            @db.VarChar(50)
+  raw_input_json String?            @db.Text
+  from_accounts  String[]
+  retry_count    Int                @default(0)
+  started_at     DateTime?
+  worker_id      String?            @db.VarChar(255)
+  created_at     DateTime           @default(now())
+
+  @@index([status, created_at])
+  @@map("download_tasks")
+}
+
+model TenantMessageState {
+  id                Int      @id @default(autoincrement())
+  tenant_id         Int
+  from_account      String   @db.Text
+  to_account        String   @db.Text
+  last_forwarded_id BigInt   @default(0)
+  updated_at        DateTime @updatedAt
+  tenant            Tenant   @relation(fields: [tenant_id], references: [id])
+
+  @@unique([tenant_id, from_account, to_account])
+  @@map("tenant_message_state")
 }

@@ -10,19 +10,25 @@ import { ServerRoute } from "./routes/servers/ServerRoute";
 import { TelegramClientService } from "./telegram/TelegramClientService";
 import { TelegramSessionWatchdog } from "./telegram/TelegramSessionWatchdog";
 import { QueueJobWatchdog } from "./queue/QueueJobWatchdog";
+import { DownloadWorkerService } from "./services/DownloadWorkerService";
+import { TenantForwardingScheduler } from "./services/TenantForwardingScheduler";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 async function bootstrap(): Promise<void> {
 	await TelegramClientService.restoreFromDatabase();
 
-	// Start the telegram session watchdog
 	const sessionWatchdog = new TelegramSessionWatchdog();
 	sessionWatchdog.start();
 
-	// Start the queue job watchdog
 	const queueWatchdog = new QueueJobWatchdog();
 	queueWatchdog.start();
+
+	const downloadWorker = new DownloadWorkerService();
+	downloadWorker.start();
+
+	const forwardingScheduler = new TenantForwardingScheduler();
+	forwardingScheduler.start();
 
 	const app = new Application();
 	app
