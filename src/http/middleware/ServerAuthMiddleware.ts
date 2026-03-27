@@ -1,5 +1,5 @@
 import { FastifyReply, FastifyRequest } from "fastify";
-import { BaseMiddleware } from "./TenantAuthMiddleware";
+import { BaseMiddleware } from "./BaseMiddleware";
 import { ErrorResponse } from "../ApiResponse";
 
 /**

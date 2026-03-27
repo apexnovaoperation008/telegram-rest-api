@@ -78,17 +78,16 @@ export class DownloadWorkerService {
 				    worker_id = ${workerId}
 				WHERE id = (
 					SELECT id FROM download_tasks
-					WHERE status = 'pending'
-					AND from_accounts && COALESCE(
-						(
-							SELECT ARRAY_AGG(ts.session_id)
-							FROM telegram_sessions ts
-							JOIN tenants t ON ts.tenant_id = t.id
-							WHERE t.server_name = ${SERVER_NAME}
-							AND ts.status = ${SessionStatus.ACTIVE}
-						),
-						ARRAY[]::TEXT[]
-					)
+				WHERE status = 'pending'
+				AND from_accounts && COALESCE(
+					(
+						SELECT ARRAY_AGG(ts.session_id)
+						FROM telegram_sessions ts
+						WHERE ts.server_name = ${SERVER_NAME}
+						AND ts.status = ${SessionStatus.ACTIVE}
+					),
+					ARRAY[]::TEXT[]
+				)
 					ORDER BY created_at ASC
 					LIMIT 1
 					FOR UPDATE SKIP LOCKED
@@ -272,7 +271,7 @@ export class DownloadWorkerService {
 					.findMany({
 						where: {
 							status: SessionStatus.ACTIVE,
-							tenant: { server_name: SERVER_NAME },
+							server_name: SERVER_NAME,
 						},
 						select: { session_id: true },
 					})

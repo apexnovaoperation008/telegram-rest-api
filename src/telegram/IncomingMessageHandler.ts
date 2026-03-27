@@ -81,10 +81,10 @@ export class IncomingMessageHandler {
 			if (parsed) mediaList.push(parsed);
 		}
 
-		const tenantId = await this.resolveTenantId();
-		if (tenantId === null) {
+		const sessionRecordId = await this.resolveSessionRecordId();
+		if (sessionRecordId === null) {
 			console.error(
-				`[MessageHandler] No tenant found for session ${this.sessionId}`,
+				`[MessageHandler] No session record found for session ${this.sessionId}`,
 			);
 			return;
 		}
@@ -100,7 +100,7 @@ export class IncomingMessageHandler {
 			return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
 				const msgRecord = await tx.message.create({
 					data: {
-						tenant_id: tenantId,
+						session_id: sessionRecordId,
 						telegram_chat_id: chatId,
 						telegram_message_id: firstMsg.id,
 						from_account: fromAccount,
@@ -245,19 +245,19 @@ export class IncomingMessageHandler {
 		);
 	}
 
-	private async resolveTenantId(): Promise<number | null> {
+	private async resolveSessionRecordId(): Promise<number | null> {
 		const db = DatabaseClient.getInstance();
 		const session = await db.execute(
 			(prisma) =>
 				prisma.telegramSession.findFirst({
 					where: {
-						telegram_user_id: this.telegramUserId,
+						session_id: this.sessionId,
 						status: "active",
 					},
-					select: { tenant_id: true },
-				}) as Promise<{ tenant_id: number } | null>,
+					select: { id: true },
+				}) as Promise<{ id: number } | null>,
 		);
-		return session?.tenant_id ?? null;
+		return session?.id ?? null;
 	}
 
 	private delay(ms: number): Promise<void> {

@@ -6,7 +6,7 @@ export interface AttachmentRecord {
 
 export interface MessageWithAttachments {
 	id: bigint;
-	tenant_id: number;
+	session_id: number;
 	telegram_chat_id: string;
 	telegram_message_id: number;
 	from_account: string;

@@ -18,22 +18,23 @@ export class AuthRoute extends BaseRoute {
 	 * before creating the pool-safe replacement.
 	 */
 	private async saveSession(
-		request: FastifyRequest,
 		authClient: TelegramClientService,
 		user: Api.User,
+		callbackUrl: string,
 	): Promise<void> {
-		const tenant = await this.getTenant(request);
 		const sessionId = authClient.getSession();
 		const telegramUserId = user.id.toString();
+		const serverName = process.env.SERVER_NAME ?? "";
 
 		await DatabaseClient.getInstance().execute((prisma) =>
 			prisma.telegramSession.create({
 				data: {
-					tenant_id: tenant.id,
 					session_id: sessionId,
 					telegram_user_id: telegramUserId,
 					telegram_username: user.username ?? "",
 					telegram_access_hash: user.accessHash?.toString() ?? "",
+					server_name: serverName,
+					callback_url: callbackUrl,
 					status: SessionStatus.ACTIVE,
 				},
 			}),
@@ -144,17 +145,18 @@ export class AuthRoute extends BaseRoute {
 		fastify.post(
 			"/auth/SignIn",
 			async (request: FastifyRequest, reply: FastifyReply) => {
-				const { phoneNumber, phoneCodeHash, phoneCode, sessionId } =
+				const { phoneNumber, phoneCodeHash, phoneCode, sessionId, callbackUrl } =
 					request.body as {
 						phoneNumber: string;
 						phoneCodeHash: string;
 						phoneCode: string;
 						sessionId: string;
+						callbackUrl: string;
 					};
 
-				if (!phoneNumber || !phoneCodeHash || !phoneCode || !sessionId) {
+				if (!phoneNumber || !phoneCodeHash || !phoneCode || !sessionId || !callbackUrl) {
 					return new ErrorResponse(
-						"phoneNumber, phoneCodeHash, phoneCode, and sessionId are required",
+						"phoneNumber, phoneCodeHash, phoneCode, sessionId, and callbackUrl are required",
 						400,
 					).send(reply);
 				}
@@ -172,7 +174,7 @@ export class AuthRoute extends BaseRoute {
 					);
 
 					const activeSessionId = telegram.getSession();
-					await this.saveSession(request, telegram, result.user as Api.User);
+					await this.saveSession(telegram, result.user as Api.User, callbackUrl);
 
 					new SuccessResponse(
 						{ result, sessionId: activeSessionId },
@@ -195,18 +197,19 @@ export class AuthRoute extends BaseRoute {
 		fastify.post(
 			"/auth/SignUp",
 			async (request: FastifyRequest, reply: FastifyReply) => {
-				const { phoneNumber, phoneCodeHash, firstName, lastName, sessionId } =
+				const { phoneNumber, phoneCodeHash, firstName, lastName, sessionId, callbackUrl } =
 					request.body as {
 						phoneNumber: string;
 						phoneCodeHash: string;
 						firstName: string;
 						lastName: string;
 						sessionId: string;
+						callbackUrl: string;
 					};
 
-				if (!phoneNumber || !phoneCodeHash || !firstName || !sessionId) {
+				if (!phoneNumber || !phoneCodeHash || !firstName || !sessionId || !callbackUrl) {
 					return new ErrorResponse(
-						"phoneNumber, phoneCodeHash, firstName, and sessionId are required",
+						"phoneNumber, phoneCodeHash, firstName, sessionId, and callbackUrl are required",
 						400,
 					).send(reply);
 				}
@@ -224,7 +227,7 @@ export class AuthRoute extends BaseRoute {
 					);
 
 					const activeSessionId = telegram.getSession();
-					await this.saveSession(request, telegram, result.user as Api.User);
+					await this.saveSession(telegram, result.user as Api.User, callbackUrl);
 
 					new SuccessResponse(
 						{ result, sessionId: activeSessionId },
@@ -267,13 +270,14 @@ export class AuthRoute extends BaseRoute {
 		fastify.post(
 			"/auth/TwoFactorAuth",
 			async (request: FastifyRequest, reply: FastifyReply) => {
-				const { sessionId, password } = request.body as {
+				const { sessionId, password, callbackUrl } = request.body as {
 					sessionId: string;
 					password: string;
+					callbackUrl: string;
 				};
 
-				if (!sessionId) {
-					return new ErrorResponse("sessionId is required", 400).send(reply);
+				if (!sessionId || !callbackUrl) {
+					return new ErrorResponse("sessionId and callbackUrl are required", 400).send(reply);
 				}
 
 				const telegram = await TelegramClientService.initialize(sessionId);
@@ -290,7 +294,7 @@ export class AuthRoute extends BaseRoute {
 							password: passwordCheck,
 						}),
 					);
-					await this.saveSession(request, telegram, result.user as Api.User);
+					await this.saveSession(telegram, result.user as Api.User, callbackUrl);
 
 					new SuccessResponse(
 						{ result, sessionId },

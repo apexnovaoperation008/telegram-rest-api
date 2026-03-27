@@ -129,21 +129,21 @@ export class TelegramSessionWatchdog {
 
 		try {
 			// Get all active sessions from the database by server name and status active
-			activeSessions = await DatabaseClient.getInstance().execute<
-				TelegramSessionRecord[]
-			>((prisma) =>
-				prisma.telegramSession.findMany({
-					select: {
-						id: true,
-						session_id: true,
-						telegram_user_id: true,
-					},
-					where: {
-						status: SessionStatus.ACTIVE,
-						tenant: { server_name: serverName },
-					},
-				}),
-			);
+		activeSessions = await DatabaseClient.getInstance().execute<
+			TelegramSessionRecord[]
+		>((prisma) =>
+			prisma.telegramSession.findMany({
+				select: {
+					id: true,
+					session_id: true,
+					telegram_user_id: true,
+				},
+				where: {
+					status: SessionStatus.ACTIVE,
+					server_name: serverName,
+				},
+			}),
+		);
 		} catch (error) {
 			console.error("[Watchdog] Failed to query active sessions:", error);
 			return;

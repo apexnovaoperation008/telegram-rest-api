@@ -14,49 +14,21 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Tenant {
-  id               Int               @id @default(autoincrement())
-  secret_id        String            @unique @db.VarChar(20)
-  secret_code      String            @unique @db.VarChar(50)
-  server_name      String            @unique @db.VarChar(255)
-  callback_url     String            @db.Text
-  created_at       DateTime          @default(now())
-  updated_at       DateTime          @updatedAt
-  telegramSessions    TelegramSession[]
-  messages            Message[]
-  tenantMessageStates TenantMessageState[]
-
-  @@map("tenants")
-}
-
 model TelegramSession {
-  id          Int      @id @default(autoincrement())
-  tenant_id   Int
-  session_id  String   @db.Text
-  telegram_user_id  String   @db.VarChar(255)
-  telegram_username String   @db.VarChar(255)
-  telegram_access_hash  String  @db.VarChar(255)
-  status      String   @db.VarChar(50)
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
-  tenant      Tenant   @relation(fields: [tenant_id], references: [id])
+  id                    Int                  @id @default(autoincrement())
+  session_id            String               @db.Text
+  telegram_user_id      String               @db.VarChar(255)
+  telegram_username     String               @db.VarChar(255)
+  telegram_access_hash  String               @db.VarChar(255)
+  server_name           String               @db.VarChar(255)
+  callback_url          String               @db.Text
+  status                String               @db.VarChar(50)
+  created_at            DateTime             @default(now())
+  updated_at            DateTime             @updatedAt
+  messages              Message[]
+  tenantMessageStates   TenantMessageState[]
 
   @@map("telegram_sessions")
-}
-
-model QueueJob {
-  id          Int      @id @default(autoincrement())
-  type        String   @db.VarChar(100)
-  payload     Json     @default("{}")
-  status      String   @default("pending") @db.VarChar(50)
-  attempts    Int      @default(0)
-  max_attempts Int     @default(3)
-  last_error  String?  @db.Text
-  created_at  DateTime @default(now())
-  updated_at  DateTime @default(now())
-
-  @@index([status, created_at])
-  @@map("queue_jobs")
 }
 
 // ── Message Pipeline ────────────────────────────────────────────────
@@ -76,7 +48,7 @@ enum DownloadTaskStatus {
 
 model Message {
   id                  BigInt        @id @default(autoincrement())
-  tenant_id           Int
+  session_id          Int
   telegram_chat_id    String        @db.Text
   telegram_message_id Int
   from_account        String        @db.Text
@@ -86,11 +58,11 @@ model Message {
   status              MessageStatus @default(pending)
   created_at          DateTime      @default(now())
   updated_at          DateTime      @updatedAt
-  tenant              Tenant        @relation(fields: [tenant_id], references: [id])
+  session             TelegramSession @relation(fields: [session_id], references: [id])
   attachments         Attachment[]
 
-  @@index([tenant_id, id, status])
-  @@index([tenant_id, to_account, id, status])
+  @@index([session_id, id, status])
+  @@index([session_id, to_account, id, status])
   @@map("messages")
 }
 
@@ -127,13 +99,13 @@ model DownloadTask {
 
 model TenantMessageState {
   id                Int      @id @default(autoincrement())
-  tenant_id         Int
+  session_id        Int
   from_account      String   @db.Text
   to_account        String   @db.Text
   last_forwarded_id BigInt   @default(0)
   updated_at        DateTime @updatedAt
-  tenant            Tenant   @relation(fields: [tenant_id], references: [id])
+  session           TelegramSession @relation(fields: [session_id], references: [id])
 
-  @@unique([tenant_id, from_account, to_account])
+  @@unique([session_id, from_account, to_account])
   @@map("tenant_message_state")
 }

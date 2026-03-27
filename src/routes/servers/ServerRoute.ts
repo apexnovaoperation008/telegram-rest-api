@@ -3,8 +3,6 @@ import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
 import { DatabaseClient } from "../../database/DatabaseClient";
 import { TelegramClientService } from "../../telegram/TelegramClientService";
-import { TenantService } from "../../services/TenantService";
-import { QueueJobService, QueueJobType } from "../../services/QueueJobService";
 import { SessionStatus } from "../../database/constants/SessionStatus";
 import { ServerAuthMiddleware } from "../../http/middleware/ServerAuthMiddleware";
 
@@ -30,107 +28,6 @@ export class ServerRoute extends BaseRoute {
 			protected_.addHook("onRequest", new ServerAuthMiddleware().handle);
 
 			/**
-			 * Creates a new tenant for this server and returns the generated credentials.
-			 */
-			protected_.post(
-				"/server/CreateTenant",
-				async (request: FastifyRequest, reply: FastifyReply) => {
-					const { callbackUrl } = request.body as { callbackUrl?: string };
-
-					if (!callbackUrl) {
-						return new ErrorResponse("callbackUrl is required", 400).send(
-							reply,
-						);
-					}
-
-					const serverName = process.env.SERVER_NAME ?? "";
-					if (!serverName) {
-						return new ErrorResponse(
-							"SERVER_NAME is not configured on this server",
-							500,
-						).send(reply);
-					}
-
-					try {
-						const { secretId, secretCode } =
-							TenantService.generateCredentials();
-						const tenant = await DatabaseClient.getInstance().execute<any>(
-							(prisma) =>
-								(prisma as any).tenant.create({
-									data: {
-										secret_id: secretId,
-										secret_code: secretCode,
-										server_name: serverName,
-										callback_url: callbackUrl,
-									},
-									select: {
-										id: true,
-										secret_id: true,
-										secret_code: true,
-										server_name: true,
-										callback_url: true,
-										created_at: true,
-									},
-								}),
-						);
-
-						new SuccessResponse(
-							tenant,
-							"Tenant created successfully",
-							201,
-						).send(reply);
-					} catch (error: unknown) {
-						ErrorResponse.fromError(error, 500).send(reply);
-					}
-				},
-			);
-
-			/**
-			 * Returns all tenants registered on this server.
-			 * secret_code is masked: first 2 + **** + last 2 characters.
-			 */
-			protected_.get(
-				"/server/GetTenants",
-				async (_request: FastifyRequest, reply: FastifyReply) => {
-					const serverName = process.env.SERVER_NAME ?? "";
-					if (!serverName) {
-						return new ErrorResponse(
-							"SERVER_NAME is not configured on this server",
-							500,
-						).send(reply);
-					}
-
-					try {
-						const tenants = await DatabaseClient.getInstance().execute<any[]>(
-							(prisma) =>
-								(prisma as any).tenant.findMany({
-									where: { server_name: serverName },
-									select: {
-										id: true,
-										secret_id: true,
-										secret_code: true,
-										callback_url: true,
-										created_at: true,
-									},
-									orderBy: { created_at: "asc" },
-								}),
-						);
-
-						const masked = tenants.map((t) => ({
-							...t,
-							secret_code: `${t.secret_code.slice(0, 2)}********${t.secret_code.slice(-2)}`,
-						}));
-
-						new SuccessResponse(masked, "Tenants retrieved successfully").send(
-							reply,
-						);
-					} catch (error: unknown) {
-						ErrorResponse.fromError(error, 500).send(reply);
-					}
-				},
-			);
-
-			/**
 			 * Returns server-wide runtime statistics.
 			 */
 			protected_.get(
@@ -147,16 +44,14 @@ export class ServerRoute extends BaseRoute {
 					try {
 						const db = DatabaseClient.getInstance();
 
-						const [activeSessions] = await Promise.all([
-							db.execute<number>((prisma) =>
-								(prisma as any).telegramSession.count({
-									where: {
-										status: SessionStatus.ACTIVE,
-										tenant: { server_name: serverName },
-									},
-								}),
-							),
-						]);
+						const activeSessions = await db.execute<number>((prisma) =>
+							prisma.telegramSession.count({
+								where: {
+									status: SessionStatus.ACTIVE,
+									server_name: serverName,
+								},
+							}),
+						);
 
 						new SuccessResponse(
 							{
@@ -164,207 +59,6 @@ export class ServerRoute extends BaseRoute {
 								activeSessions,
 							},
 							"Statistics retrieved successfully",
-						).send(reply);
-					} catch (error: unknown) {
-						ErrorResponse.fromError(error, 500).send(reply);
-					}
-				},
-			);
-			/**
-			 * Schedules a tenant for deletion.
-			 *
-			 * 1. Regenerates credentials so the tenant is locked out immediately.
-			 * 2. Enqueues a background job to invalidate all Telegram sessions
-			 *    and delete the tenant record.
-			 *
-			 * Body: { "id": 1 }
-			 */
-			protected_.post(
-				"/server/DeleteTenant",
-				async (request: FastifyRequest, reply: FastifyReply) => {
-					const { id } = request.body as { id?: string | number };
-
-					if (!id) {
-						return new ErrorResponse("tenant id is required", 400).send(reply);
-					}
-
-					const serverName = process.env.SERVER_NAME ?? "";
-					if (!serverName) {
-						return new ErrorResponse(
-							"SERVER_NAME is not configured on this server",
-							500,
-						).send(reply);
-					}
-
-					try {
-						const db = DatabaseClient.getInstance();
-
-						const tenant = await db.execute<any>((prisma) =>
-							(prisma as any).tenant.findFirst({
-								where: { id: parseInt(id as string), server_name: serverName },
-								select: { id: true, secret_id: true, secret_code: true },
-							}),
-						);
-
-						if (!tenant) {
-							return new ErrorResponse(
-								"Tenant not found on this server",
-								404,
-							).send(reply);
-						}
-
-						// Immediately regenerate credentials to lock the tenant out
-						const { secretId, secretCode } =
-							TenantService.generateCredentials();
-
-						await TenantService.invalidate(
-							tenant.secret_id,
-							tenant.secret_code,
-						);
-
-						await db.execute((prisma) =>
-							(prisma as any).tenant.update({
-								where: { id: parseInt(id as string) },
-								data: { secret_id: secretId, secret_code: secretCode },
-							}),
-						);
-
-						// Enqueue the actual deletion for background processing
-						const job = await QueueJobService.enqueue(
-							QueueJobType.DELETE_TENANT,
-							{ tenantId: parseInt(id as string) },
-						);
-
-						new SuccessResponse({}, "Tenant deletion is in progress").send(
-							reply,
-						);
-					} catch (error: unknown) {
-						ErrorResponse.fromError(error, 500).send(reply);
-					}
-				},
-			);
-
-			/**
-			 * Updates the callback URL for a specific tenant on this server.
-			 */
-			protected_.patch(
-				"/server/UpdateCallbackUrl",
-				async (request: FastifyRequest, reply: FastifyReply) => {
-					const { id, callbackUrl } = request.body as {
-						id?: string | number;
-						callbackUrl?: string;
-					};
-
-					if (!id || !callbackUrl) {
-						return new ErrorResponse(
-							"id and callbackUrl are required",
-							400,
-						).send(reply);
-					}
-
-					const serverName = process.env.SERVER_NAME ?? "";
-
-					try {
-						const db = DatabaseClient.getInstance();
-
-						const tenant = await db.execute<any>((prisma) =>
-							(prisma as any).tenant.findFirst({
-								where: { id: parseInt(id as string), server_name: serverName },
-							}),
-						);
-
-						if (!tenant) {
-							return new ErrorResponse(
-								"Tenant not found on this server",
-								404,
-							).send(reply);
-						}
-
-						const updated = await db.execute<any>((prisma) =>
-							(prisma as any).tenant.update({
-								where: { id: parseInt(id as string) },
-								data: { callback_url: callbackUrl },
-								select: {
-									id: true,
-									secret_id: true,
-									callback_url: true,
-									updated_at: true,
-								},
-							}),
-						);
-
-						new SuccessResponse(
-							updated,
-							"Callback URL updated successfully",
-						).send(reply);
-					} catch (error: unknown) {
-						ErrorResponse.fromError(error, 500).send(reply);
-					}
-				},
-			);
-
-			/**
-			 * Regenerates secret_id and secret_code for a specific tenant on this server.
-			 * The old credentials are immediately invalidated — any cached Redis entries
-			 * must be considered stale after this call.
-			 */
-			protected_.post(
-				"/server/RegenerateTenantCredentials",
-				async (request: FastifyRequest, reply: FastifyReply) => {
-					const { id } = request.body as { id?: string | number };
-
-					if (!id) {
-						return new ErrorResponse("id is required", 400).send(reply);
-					}
-
-					const serverName = process.env.SERVER_NAME ?? "";
-
-					try {
-						const db = DatabaseClient.getInstance();
-
-						const tenant = await db.execute<any>((prisma) =>
-							(prisma as any).tenant.findFirst({
-								where: { id: parseInt(id as string), server_name: serverName },
-								select: { id: true, secret_id: true, secret_code: true },
-							}),
-						);
-
-						if (!tenant) {
-							return new ErrorResponse(
-								"Tenant not found on this server",
-								404,
-							).send(reply);
-						}
-
-						const { secretId: newSecretId, secretCode: newSecretCode } =
-							TenantService.generateCredentials();
-
-						// Invalidate the old credentials from Redis before overwriting
-						await TenantService.invalidate(
-							tenant.secret_id,
-							tenant.secret_code,
-						);
-
-						const updated = await db.execute<any>((prisma) =>
-							(prisma as any).tenant.update({
-								where: { id: parseInt(id as string) },
-								data: {
-									secret_id: newSecretId,
-									secret_code: newSecretCode,
-								},
-								select: {
-									id: true,
-									secret_id: true,
-									secret_code: true,
-									callback_url: true,
-									updated_at: true,
-								},
-							}),
-						);
-
-						new SuccessResponse(
-							updated,
-							"Credentials regenerated successfully",
 						).send(reply);
 					} catch (error: unknown) {
 						ErrorResponse.fromError(error, 500).send(reply);

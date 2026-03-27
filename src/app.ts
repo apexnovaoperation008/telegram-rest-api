@@ -5,12 +5,12 @@ import Fastify, {
 	FastifyRequest,
 } from "fastify";
 import { BaseRoute } from "./routes/BaseRoute";
-import { TenantAuthMiddleware } from "./http/middleware/TenantAuthMiddleware";
+import { BaseMiddleware } from "./http/middleware/BaseMiddleware";
 import { ErrorResponse } from "./http/ApiResponse";
 
 export class Application {
 	private readonly server: FastifyInstance;
-	private authMiddleware: TenantAuthMiddleware | null = null;
+	private authMiddleware: BaseMiddleware | null = null;
 
 	constructor() {
 		this.server = Fastify({ logger: true });
@@ -38,14 +38,14 @@ export class Application {
 	 * Stores the auth middleware to be applied to authenticated route scopes.
 	 * Must be called before `registerRoutes`.
 	 */
-	registerMiddleware(middleware: TenantAuthMiddleware): this {
+	registerMiddleware(middleware: BaseMiddleware): this {
 		this.authMiddleware = middleware;
 		return this;
 	}
 
 	/**
 	 * Registers routes without any authentication middleware.
-	 * Use for public endpoints (e.g. health check, tenant creation).
+	 * Use for public endpoints (e.g. health check).
 	 */
 	registerPublicRoutes(routes: BaseRoute[]): this {
 		this.server.register(async (fastify: FastifyInstance) => {
@@ -58,7 +58,7 @@ export class Application {
 
 	/**
 	 * Registers routes inside an authenticated scope.
-	 * The `TenantAuthMiddleware` is applied as an `onRequest` hook scoped only
+	 * The auth middleware is applied as an `onRequest` hook scoped only
 	 * to these routes — public routes registered via `registerPublicRoutes`
 	 * are not affected.
 	 */

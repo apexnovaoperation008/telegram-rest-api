@@ -8,7 +8,6 @@ import { TelegramClientInterface } from "./interface/Telegram";
 
 interface TelegramSessionRecord {
 	id: number;
-	tenant_id: number;
 	session_id: string;
 	telegram_user_id: string;
 	telegram_username: string;
@@ -171,7 +170,7 @@ export class TelegramClientService implements TelegramClientInterface {
 			prisma.telegramSession.findMany({
 				where: {
 					status: SessionStatus.ACTIVE,
-					tenant: { server_name: serverName },
+					server_name: serverName,
 				},
 			}),
 		);

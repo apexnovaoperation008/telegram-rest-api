@@ -11,7 +11,7 @@ const SERVER_NAME = process.env.SERVER_NAME ?? "";
 const STORAGE_DIR = path.resolve(process.cwd(), "storage");
 
 interface ForwardingChannel {
-	tenant_id: number;
+	session_id: number;
 	from_account: string;
 	to_account: string;
 }
@@ -56,11 +56,11 @@ export class TenantForwardingScheduler {
 						where: {
 							status: { not: "forwarded" },
 							to_account: { not: null },
-							tenant: { server_name: SERVER_NAME },
+							session: { server_name: SERVER_NAME },
 						},
-						select: { tenant_id: true, from_account: true, to_account: true },
-						distinct: ["tenant_id", "from_account", "to_account"],
-					}) as Promise<{ tenant_id: number; from_account: string; to_account: string | null }[]>,
+						select: { session_id: true, from_account: true, to_account: true },
+						distinct: ["session_id", "from_account", "to_account"],
+					}) as Promise<{ session_id: number; from_account: string; to_account: string | null }[]>,
 			);
 
 			const channels: ForwardingChannel[] = rows.filter(
@@ -69,7 +69,7 @@ export class TenantForwardingScheduler {
 
 			await Promise.all(
 				channels.map((ch) =>
-					this.processChannel(ch.tenant_id, ch.from_account, ch.to_account),
+					this.processChannel(ch.session_id, ch.from_account, ch.to_account),
 				),
 			);
 		} catch (error) {
@@ -80,7 +80,7 @@ export class TenantForwardingScheduler {
 	}
 
 	private async processChannel(
-		tenantId: number,
+		sessionId: number,
 		fromAccount: string,
 		toAccount: string,
 	): Promise<void> {
@@ -91,15 +91,15 @@ export class TenantForwardingScheduler {
 				(prisma) =>
 					prisma.tenantMessageState.upsert({
 						where: {
-							tenant_id_from_account_to_account: {
-								tenant_id: tenantId,
+							session_id_from_account_to_account: {
+								session_id: sessionId,
 								from_account: fromAccount,
 								to_account: toAccount,
 							},
 						},
 						update: {},
 						create: {
-							tenant_id: tenantId,
+							session_id: sessionId,
 							from_account: fromAccount,
 							to_account: toAccount,
 							last_forwarded_id: BigInt(0),
@@ -110,7 +110,7 @@ export class TenantForwardingScheduler {
 			let advanced = true;
 			while (advanced) {
 				advanced = await this.forwardNext(
-					tenantId,
+					sessionId,
 					fromAccount,
 					toAccount,
 					state.last_forwarded_id,
@@ -121,14 +121,14 @@ export class TenantForwardingScheduler {
 			}
 		} catch (error) {
 			console.error(
-				`[ForwardingScheduler] Error for tenant ${tenantId} ${fromAccount} → ${toAccount}:`,
+				`[ForwardingScheduler] Error for session ${sessionId} ${fromAccount} → ${toAccount}:`,
 				error,
 			);
 		}
 	}
 
 	private async forwardNext(
-		tenantId: number,
+		sessionId: number,
 		fromAccount: string,
 		toAccount: string,
 		lastForwardedId: bigint,
@@ -138,7 +138,7 @@ export class TenantForwardingScheduler {
 		return db.execute(async (prisma) => {
 			const nextMsg = await prisma.message.findFirst({
 				where: {
-					tenant_id: tenantId,
+					session_id: sessionId,
 					from_account: fromAccount,
 					to_account: toAccount,
 					id: { gt: lastForwardedId },
@@ -152,8 +152,8 @@ export class TenantForwardingScheduler {
 			if (nextMsg.status === "forwarded") {
 				await prisma.tenantMessageState.update({
 					where: {
-						tenant_id_from_account_to_account: {
-							tenant_id: tenantId,
+						session_id_from_account_to_account: {
+							session_id: sessionId,
 							from_account: fromAccount,
 							to_account: toAccount,
 						},
@@ -174,8 +174,8 @@ export class TenantForwardingScheduler {
 				}),
 				prisma.tenantMessageState.update({
 					where: {
-						tenant_id_from_account_to_account: {
-							tenant_id: tenantId,
+						session_id_from_account_to_account: {
+							session_id: sessionId,
 							from_account: fromAccount,
 							to_account: toAccount,
 						},
@@ -185,7 +185,7 @@ export class TenantForwardingScheduler {
 			]);
 
 			console.log(
-				`[ForwardingScheduler] Forwarded message ${nextMsg.id} for tenant ${tenantId} ${fromAccount} → ${toAccount}`,
+				`[ForwardingScheduler] Forwarded message ${nextMsg.id} for session ${sessionId} ${fromAccount} → ${toAccount}`,
 			);
 			return true;
 		});
@@ -194,7 +194,7 @@ export class TenantForwardingScheduler {
 	private writeFinalLog(msg: MessageWithAttachments): void {
 		const payload = {
 			id: msg.id.toString(),
-			tenant_id: msg.tenant_id,
+			session_id: msg.session_id,
 			chat_id: msg.telegram_chat_id,
 			message_id: msg.telegram_message_id,
 			from_account: msg.from_account,
