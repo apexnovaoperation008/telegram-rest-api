@@ -91,44 +91,71 @@ export class TelegramSessionWatchdog {
 	/**
 	 * Scenario 1: Pool contains a session whose user has logged out.
 	 *
-	 * Iterates every pooled session and calls `isUserAuthorized()`.
-	 * A single failure can be caused by a transient issue (rate limit,
-	 * network hiccup), so the session is only revoked after
-	 * {@link REVOKE_AFTER_FAILURES} consecutive failures.
+	 * First probes every pooled session with `isUserAuthorized()`, then
+	 * applies a circuit breaker: if most sessions failed in this tick
+	 * the cause is almost certainly a network outage rather than
+	 * individual logouts, so failure counters are left unchanged and
+	 * no sessions are evicted.
+	 *
+	 * Individual failures are tracked with a consecutive-failure counter;
+	 * a session is only revoked after {@link REVOKE_AFTER_FAILURES}
+	 * consecutive ticks where it alone (not the whole pool) fails.
 	 */
 	private async evictLoggedOutSessions(): Promise<void> {
 		const pooledIds = TelegramClientService.getPooledSessionIds();
+		if (pooledIds.length === 0) return;
+
+		const results = new Map<string, boolean>();
 
 		for (const sessionId of pooledIds) {
 			const client = TelegramClientService.getFromPool(sessionId);
 			if (!client) continue;
 
 			try {
-				const authorized = await client.getClient().isUserAuthorized();
+				results.set(
+					sessionId,
+					await client.getClient().isUserAuthorized(),
+				);
+			} catch {
+				results.set(sessionId, false);
+			}
+		}
 
-				if (authorized) {
-					this.failureCounts.delete(sessionId);
-					continue;
-				}
+		const total = results.size;
+		const failedCount = [...results.values()].filter((v) => !v).length;
 
-				const count = (this.failureCounts.get(sessionId) ?? 0) + 1;
-				this.failureCounts.set(sessionId, count);
+		if (failedCount === total && total > 1) {
+			console.warn(
+				`[Watchdog] All ${total} sessions failed authorization — likely a network issue, skipping eviction`,
+			);
+			return;
+		}
 
-				if (count >= REVOKE_AFTER_FAILURES) {
-					this.failureCounts.delete(sessionId);
-					await TelegramClientService.invalidate(sessionId);
-					console.log(
-						`[Watchdog] Session unauthorized ${count} consecutive times — revoked`,
-					);
-				} else {
-					console.warn(
-						`[Watchdog] Session authorization check failed (${count}/${REVOKE_AFTER_FAILURES})`,
-					);
-				}
-			} catch (error) {
-				console.error(
-					`[Watchdog] Error checking authorization for session:`,
-					error,
+		if (total > 2 && failedCount / total > 0.5) {
+			console.warn(
+				`[Watchdog] ${failedCount}/${total} sessions failed — likely a network issue, skipping eviction`,
+			);
+			return;
+		}
+
+		for (const [sessionId, authorized] of results) {
+			if (authorized) {
+				this.failureCounts.delete(sessionId);
+				continue;
+			}
+
+			const count = (this.failureCounts.get(sessionId) ?? 0) + 1;
+			this.failureCounts.set(sessionId, count);
+
+			if (count >= REVOKE_AFTER_FAILURES) {
+				this.failureCounts.delete(sessionId);
+				await TelegramClientService.invalidate(sessionId);
+				console.log(
+					`[Watchdog] Session unauthorized ${count} consecutive times — revoked`,
+				);
+			} else {
+				console.warn(
+					`[Watchdog] Session authorization check failed (${count}/${REVOKE_AFTER_FAILURES})`,
 				);
 			}
 		}
