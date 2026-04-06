@@ -409,9 +409,8 @@ export class IncomingEventHandler {
 	// ── Helpers ──────────────────────────────────────────────────────────
 
 	private serializeBigInt(value: unknown): string {
-		return JSON.stringify(
-			value,
-			(_, v) => (typeof v === "bigint" ? v.toString() : v),
+		return JSON.stringify(value, (_, v) =>
+			typeof v === "bigint" ? v.toString() : v,
 		);
 	}
 

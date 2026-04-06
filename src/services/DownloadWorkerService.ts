@@ -28,13 +28,17 @@ export class DownloadWorkerService {
 	private active = 0;
 	private running = false;
 
-	start(): void {
+	async start(): Promise<void> {
 		if (this.running) return;
 		this.running = true;
 
 		if (!fs.existsSync(FILES_DIR)) {
 			fs.mkdirSync(FILES_DIR, { recursive: true });
 		}
+
+		// Reset any tasks left in 'processing' by a previous run of this server.
+		// Scoped to SERVER_NAME so tasks owned by other servers are untouched.
+		await this.resetOrphanedTasks();
 
 		this.pollLoop();
 		setInterval(() => this.resetStaleTasks(), STALE_CHECK_INTERVAL_MS);
@@ -76,15 +80,15 @@ export class DownloadWorkerService {
 				WHERE id = (
 					SELECT id FROM download_tasks
 				WHERE status = 'pending'
-				AND from_accounts && COALESCE(
-					(
-						SELECT ARRAY_AGG(ts.id)
-						FROM telegram_sessions ts
-						WHERE ts.server_name = ${SERVER_NAME}
-						AND ts.status = ${SessionStatus.ACTIVE}
-					),
-					ARRAY[]::INTEGER[]
-				)
+			AND from_accounts && COALESCE(
+				(
+					SELECT ARRAY_AGG(ts.id)::INTEGER[]
+					FROM telegram_sessions ts
+					WHERE ts.server_name = ${SERVER_NAME}
+					AND ts.status = ${SessionStatus.ACTIVE}
+				),
+				ARRAY[]::INTEGER[]
+			)
 					ORDER BY created_at ASC
 					LIMIT 1
 					FOR UPDATE SKIP LOCKED
@@ -318,6 +322,33 @@ export class DownloadWorkerService {
 				},
 			});
 		});
+	}
+
+	/**
+	 * On startup, resets all tasks left in 'processing' by any previous
+	 * process on this server (any PID).  Safe to scope by SERVER_NAME prefix
+	 * because other servers use a different SERVER_NAME.
+	 */
+	private async resetOrphanedTasks(): Promise<void> {
+		const db = DatabaseClient.getInstance();
+		const { count } = await db.execute((prisma) =>
+			prisma.downloadTask.updateMany({
+				where: {
+					status: "processing",
+					worker_id: { startsWith: `${SERVER_NAME}:` },
+				},
+				data: {
+					status: "pending",
+					started_at: null,
+					worker_id: null,
+				},
+			}),
+		);
+		if (count > 0) {
+			console.log(
+				`[DownloadWorker] Reset ${count} orphaned task(s) from previous run`,
+			);
+		}
 	}
 
 	/**

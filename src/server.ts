@@ -21,7 +21,7 @@ async function bootstrap(): Promise<void> {
 	sessionWatchdog.start();
 
 	const downloadWorker = new DownloadWorkerService();
-	downloadWorker.start();
+	await downloadWorker.start();
 
 	const forwardingScheduler = new TenantForwardingScheduler();
 	forwardingScheduler.start();
