@@ -280,7 +280,9 @@ export class MessageRoute extends BaseRoute {
 								peer,
 								msgId,
 								big,
-								...(reaction && { reaction }),
+								...(reaction && {
+						reaction: [new Api.ReactionEmoji({ emoticon: reaction })],
+					}),
 							}),
 						),
 					);

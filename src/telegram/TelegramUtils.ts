@@ -1,5 +1,6 @@
 import { Api, TelegramClient } from "telegram";
 import { CustomFile } from "telegram/client/uploads";
+import bigInt from "big-integer";
 
 export type MediaType = "photo" | "video" | "file";
 
@@ -80,10 +81,9 @@ export class TelegramUtils {
 	 * Generates a unique random ID suitable for Telegram's `randomId` field.
 	 * Combines the current timestamp with a random component to avoid collisions.
 	 */
-	static randomId(): bigint {
-		return (
-			BigInt(Date.now()) * BigInt(1_000) +
-			BigInt(Math.floor(Math.random() * 1_000))
-		);
+	static randomId() {
+		return bigInt(Date.now())
+			.multiply(bigInt(1_000))
+			.plus(bigInt(Math.floor(Math.random() * 1_000)));
 	}
 }

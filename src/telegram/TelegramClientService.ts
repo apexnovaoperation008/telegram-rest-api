@@ -6,7 +6,7 @@ import { SessionStatus } from "../database/constants/SessionStatus";
 import { TelegramClientInterface } from "./interface/Telegram";
 
 interface TelegramSessionRecord {
-	id: number;
+	id: bigint;
 	session_id: string;
 	telegram_user_id: string;
 	telegram_username: string;
@@ -140,7 +140,7 @@ export class TelegramClientService implements TelegramClientInterface {
 			) as TelegramClientService;
 
 			try {
-				await client.getClient().invoke(new Api.auth.LogOut({}));
+				await client.getClient().invoke(new Api.auth.LogOut());
 				await client.destroy();
 			} catch {
 				// Client may already be in a broken state; ignore destroy errors

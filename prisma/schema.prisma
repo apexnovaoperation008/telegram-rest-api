@@ -103,3 +103,18 @@ model TenantMessageState {
 
   @@map("tenant_message_state")
 }
+
+// ── Media File Tracking ─────────────────────────────────────────────
+
+model MediaFile {
+  id         BigInt   @id @default(autoincrement())
+  file_key   String   @unique @db.VarChar(255)
+  file_path  String   @db.Text
+  file_url   String   @db.Text
+  expires_at DateTime
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([expires_at])
+  @@map("media_files")
+}

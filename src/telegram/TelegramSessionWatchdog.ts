@@ -3,7 +3,7 @@ import { DatabaseClient } from "../database/DatabaseClient";
 import { SessionStatus } from "../database/constants/SessionStatus";
 
 interface TelegramSessionRecord {
-	id: number;
+	id: bigint;
 	session_id: string;
 	telegram_user_id: string;
 }

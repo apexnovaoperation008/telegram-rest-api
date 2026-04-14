@@ -77,7 +77,7 @@ export class AuthRoute extends BaseRoute {
 
 					new SuccessResponse(
 						{
-							phoneCodeHash: result.phoneCodeHash,
+							phoneCodeHash: (result as Api.auth.SentCode).phoneCodeHash,
 							sessionId: telegram.getSession(),
 						},
 						"Verification code sent",
@@ -186,7 +186,7 @@ export class AuthRoute extends BaseRoute {
 					const activeSessionId = telegram.getSession();
 					await this.saveSession(
 						telegram,
-						result.user as Api.User,
+						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 
@@ -255,7 +255,7 @@ export class AuthRoute extends BaseRoute {
 					const activeSessionId = telegram.getSession();
 					await this.saveSession(
 						telegram,
-						result.user as Api.User,
+						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 
@@ -335,7 +335,7 @@ export class AuthRoute extends BaseRoute {
 					);
 					await this.saveSession(
 						telegram,
-						result.user as Api.User,
+						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 

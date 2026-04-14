@@ -1,10 +1,12 @@
-import { Api } from "telegram";
+import { Api, TelegramClient } from "telegram";
 import { computeCheck } from "telegram/Password";
 import { CustomFile } from "telegram/client/uploads";
+import bigInt from "big-integer";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
 import { TelegramUtils } from "../../telegram/TelegramUtils";
+import { MediaFileService } from "../../services/MediaFileService";
 
 export class ChannelRoute extends BaseRoute {
 	// ── Private Helpers ────────────────────────────────────────────────────────
@@ -12,24 +14,55 @@ export class ChannelRoute extends BaseRoute {
 	/** Constructs an InputChannel from a string id/accessHash pair. */
 	private inputChannel(id: string, accessHash: string): Api.InputChannel {
 		return new Api.InputChannel({
-			channelId: BigInt(id),
-			accessHash: BigInt(accessHash),
+			channelId: bigInt(id),
+			accessHash: bigInt(accessHash),
 		});
+	}
+
+	/**
+	 * Returns the provided accessHash if non-empty, otherwise resolves it from
+	 * the gramjs session cache / Telegram API via getEntity. Throws if the
+	 * entity cannot be found or is not a channel.
+	 */
+	private async resolveChannelAccessHash(
+		client: TelegramClient,
+		channelId: string,
+		accessHash?: string,
+	): Promise<string> {
+		if (accessHash) return accessHash;
+
+		const entity = await client.getEntity(
+			new Api.PeerChannel({ channelId: bigInt(channelId) }),
+		);
+
+		if (!(entity instanceof Api.Channel)) {
+			throw new Error(
+				`Entity ${channelId} resolved but is not a Channel (got ${entity.className})`,
+			);
+		}
+
+		if (!entity.accessHash) {
+			throw new Error(
+				`Resolved channel ${channelId} has no accessHash — the session may lack access`,
+			);
+		}
+
+		return entity.accessHash.toString();
 	}
 
 	/** Constructs an InputUser from a string id/accessHash pair. */
 	private inputUser(id: string, accessHash: string): Api.InputUser {
 		return new Api.InputUser({
-			userId: BigInt(id),
-			accessHash: BigInt(accessHash),
+			userId: bigInt(id),
+			accessHash: bigInt(accessHash),
 		});
 	}
 
 	/** Constructs an InputPeerUser from a string id/accessHash pair. */
 	private inputPeerUser(id: string, accessHash: string): Api.InputPeerUser {
 		return new Api.InputPeerUser({
-			userId: BigInt(id),
-			accessHash: BigInt(accessHash),
+			userId: bigInt(id),
+			accessHash: bigInt(accessHash),
 		});
 	}
 
@@ -48,7 +81,7 @@ export class ChannelRoute extends BaseRoute {
 			async (request: FastifyRequest, reply: FastifyReply) => {
 				const { sessionId, channels } = request.body as {
 					sessionId: string;
-					channels: { id: string; accessHash: string }[];
+					channels: { id: string; accessHash?: string }[];
 				};
 
 				if (!sessionId || !channels?.length) {
@@ -59,12 +92,38 @@ export class ChannelRoute extends BaseRoute {
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.channels.GetChannels({
-								id: channels.map((c) => this.inputChannel(c.id, c.accessHash)),
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const tgClient = client.getClient();
+
+							// Resolve any missing accessHashes in parallel before invoking
+							const resolved = await Promise.all(
+								channels.map(async (c) => ({
+									id: c.id,
+									accessHash: await this.resolveChannelAccessHash(
+										tgClient,
+										c.id,
+										c.accessHash,
+									),
+								})),
+							);
+
+							const chats = await tgClient.invoke(
+								new Api.channels.GetChannels({
+									id: resolved.map((c) =>
+										this.inputChannel(c.id, c.accessHash),
+									),
+								}),
+							);
+
+							// Serialize bigints as strings so accessHash is readable by callers
+							return JSON.parse(
+								JSON.stringify(chats, (_, v) =>
+									typeof v === "bigint" ? v.toString() : v,
+								),
+							);
+						},
 					);
 
 					new SuccessResponse(result, "Channels fetched successfully").send(
@@ -498,9 +557,7 @@ export class ChannelRoute extends BaseRoute {
 									// untilDate is a conditional TL field — only include it when
 									// a real future Unix timestamp is provided. Passing 0 causes
 									// Telegram to reject the request with UNTIL_DATE_INVALID.
-									...(bannedRights?.untilDate
-										? { untilDate: bannedRights.untilDate }
-										: {}),
+									untilDate: bannedRights?.untilDate ?? 0,
 									viewMessages: bannedRights?.viewMessages ?? false,
 									sendMessages: bannedRights?.sendMessages ?? false,
 									sendMedia: bannedRights?.sendMedia ?? false,
@@ -708,6 +765,9 @@ export class ChannelRoute extends BaseRoute {
 		/**
 		 * Returns full information about a channel, supergroup, or gigagroup,
 		 * including description, member count, invite link, pinned message, etc.
+		 *
+		 * Downloaded files are tracked in media_files and deleted after
+		 * MEDIA_RETENTION_DAYS days by MediaCleanupScheduler.
 		 */
 		fastify.post(
 			"/channels/GetFullChannel",
@@ -715,23 +775,129 @@ export class ChannelRoute extends BaseRoute {
 				const { sessionId, channelId, accessHash } = request.body as {
 					sessionId: string;
 					channelId: string;
-					accessHash: string;
+					accessHash?: string;
 				};
 
-				if (!sessionId || !channelId || !accessHash) {
+				if (!sessionId || !channelId) {
 					return new ErrorResponse(
-						"sessionId, channelId and accessHash are required",
+						"sessionId and channelId are required",
 						400,
 					).send(reply);
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.channels.GetFullChannel({
-								channel: this.inputChannel(channelId, accessHash),
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const tgClient = client.getClient();
+
+							// Resolve accessHash from gramjs session/API if not supplied
+							const resolvedHash = await this.resolveChannelAccessHash(
+								tgClient,
+								channelId,
+								accessHash,
+							);
+
+							const channelFull = await tgClient.invoke(
+								new Api.channels.GetFullChannel({
+									channel: this.inputChannel(channelId, resolvedHash),
+								}),
+							);
+
+							// Serialize to a plain object so extra fields can be appended.
+							// The replacer converts native bigint values to strings,
+							// consistent with how GramJS toJSON() behaves.
+							const data: Record<string, unknown> = JSON.parse(
+								JSON.stringify(channelFull, (_, v) =>
+									typeof v === "bigint" ? v.toString() : v,
+								),
+							);
+
+							// ── Channel avatar ────────────────────────────────────────────
+							const channelInfo = channelFull.chats.find(
+								(c: Api.TypeChat): c is Api.Channel =>
+									c instanceof Api.Channel && c.id.toString() === channelId,
+							);
+
+							let avatarUrl: string | null = null;
+							if (channelInfo?.photo instanceof Api.ChatPhoto) {
+								avatarUrl = await MediaFileService.downloadChannelPhoto(
+									tgClient,
+									channelId,
+									resolvedHash,
+									channelInfo.photo,
+								).catch((err) => {
+									console.error(
+										"[GetFullChannel] Avatar download failed:",
+										err instanceof Error ? err.message : err,
+									);
+									return null;
+								});
+							}
+
+							// Inject avatar_url into the matching chats[] entry so it sits
+							// alongside the photo field in the original payload structure.
+							// Also inject access_hash so callers can persist it without a
+							// separate lookup when accessHash was not supplied in the request.
+							const chatsArray = data.chats as Array<Record<string, unknown>>;
+							const channelEntry = chatsArray.find(
+								(c) => String(c.id) === channelId,
+							);
+							if (channelEntry) {
+								channelEntry.avatar_url = avatarUrl;
+								channelEntry.access_hash = resolvedHash;
+							}
+
+							// ── Forum topic icons ─────────────────────────────────────────
+							// Topics are fetched separately and injected into fullChat so
+							// icon_url sits within the natural full-channel payload structure.
+							if (channelInfo?.forum) {
+								const topicsResult = await tgClient.invoke(
+									new Api.channels.GetForumTopics({
+										channel: this.inputChannel(channelId, resolvedHash),
+										offsetDate: 0,
+										offsetId: 0,
+										offsetTopic: 0,
+										limit: 100,
+									}),
+								);
+
+								const topics = await Promise.all(
+									topicsResult.topics.map(async (topic: Api.TypeForumTopic) => {
+										const topicData: Record<string, unknown> = JSON.parse(
+											JSON.stringify(topic, (_, v) =>
+												typeof v === "bigint" ? v.toString() : v,
+											),
+										);
+
+										if (topic instanceof Api.ForumTopic && topic.iconEmojiId) {
+											topicData.icon_url =
+												await MediaFileService.downloadTopicIcon(
+													tgClient,
+													topic.iconEmojiId.toString(),
+												);
+										} else {
+											topicData.icon_url = null;
+										}
+
+										return topicData;
+									}),
+								);
+
+								// Attach topics directly into the fullChat object
+								const fullChatEntry = data.fullChat as Record<string, unknown>;
+								fullChatEntry.topics = topics;
+							}
+
+							// Inject avatar_url into each user that has a profile photo.
+							await MediaFileService.injectUserAvatars(
+								tgClient,
+								channelFull.users,
+								data.users as Array<Record<string, unknown>>,
+							);
+
+							return data;
+						},
 					);
 
 					new SuccessResponse(
@@ -761,7 +927,7 @@ export class ChannelRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client
 							.getClient()
-							.invoke(new Api.channels.GetGroupsForDiscussion({})),
+							.invoke(new Api.channels.GetGroupsForDiscussion()),
 					);
 
 					new SuccessResponse(
@@ -789,7 +955,7 @@ export class ChannelRoute extends BaseRoute {
 
 				try {
 					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(new Api.channels.GetInactiveChannels({})),
+						client.getClient().invoke(new Api.channels.GetInactiveChannels()),
 					);
 
 					new SuccessResponse(
@@ -946,8 +1112,8 @@ export class ChannelRoute extends BaseRoute {
 						client.getClient().invoke(
 							new Api.channels.GetSendAs({
 								peer: new Api.InputPeerChannel({
-									channelId: BigInt(channelId),
-									accessHash: BigInt(accessHash),
+									channelId: bigInt(channelId),
+									accessHash: bigInt(accessHash),
 								}),
 							}),
 						),

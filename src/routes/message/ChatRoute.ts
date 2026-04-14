@@ -1,9 +1,11 @@
 import { Api } from "telegram";
+import bigInt from "big-integer";
 import { CustomFile } from "telegram/client/uploads";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
 import { TelegramUtils } from "../../telegram/TelegramUtils";
+import { MediaFileService } from "../../services/MediaFileService";
 
 export class ChatRoute extends BaseRoute {
 	async register(fastify: FastifyInstance): Promise<void> {
@@ -49,7 +51,7 @@ export class ChatRoute extends BaseRoute {
 									offsetId,
 									offsetPeer: new Api.InputPeerEmpty(),
 									limit,
-									hash: BigInt(0),
+									hash: bigInt(0),
 									excludePinned,
 									...(folderId !== undefined && { folderId }),
 								}),
@@ -125,7 +127,7 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.GetChats({
-								id: id.map(BigInt),
+								id: id.map((x) => bigInt(x)),
 							}),
 						),
 					);
@@ -138,7 +140,14 @@ export class ChatRoute extends BaseRoute {
 		);
 
 		/**
-		 * Fetches chats by their IDs.
+		 * Fetches full info for a basic group chat.
+		 *
+		 * Enhancements over the raw Telegram response:
+		 *   - avatar_url: publicly accessible URL of the downloaded group photo
+		 *     (null when the group has no photo set)
+		 *
+		 * Downloaded files are tracked in media_files and deleted after
+		 * MEDIA_RETENTION_DAYS days by MediaCleanupScheduler.
 		 */
 		fastify.post(
 			"/chats/GetFullChat",
@@ -156,12 +165,58 @@ export class ChatRoute extends BaseRoute {
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.messages.GetFullChat({
-								chatId: BigInt(chatId),
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const chatFull = await client.getClient().invoke(
+								new Api.messages.GetFullChat({
+									chatId: bigInt(chatId),
+								}),
+							);
+
+							const data: Record<string, unknown> = JSON.parse(
+								JSON.stringify(chatFull, (_, v) =>
+									typeof v === "bigint" ? v.toString() : v,
+								),
+							);
+
+							const chatInfo = chatFull.chats.find(
+								(c: Api.TypeChat): c is Api.Chat =>
+									c instanceof Api.Chat && c.id.toString() === chatId,
+							);
+
+							let avatarUrl: string | null = null;
+							if (chatInfo?.photo instanceof Api.ChatPhoto) {
+								avatarUrl = await MediaFileService.downloadChatPhoto(
+									client.getClient(),
+									chatId,
+									chatInfo.photo,
+								).catch((err) => {
+									console.error(
+										"[GetFullChat] Avatar download failed:",
+										err instanceof Error ? err.message : err,
+									);
+									return null;
+								});
+							}
+
+							// Inject avatar_url into the matching chats[] entry so it sits
+							// alongside the photo field in the original payload structure.
+							const chatsArray = data.chats as Array<Record<string, unknown>>;
+							const chatEntry = chatsArray.find((c) => String(c.id) === chatId);
+							if (chatEntry) {
+								chatEntry.avatar_url = avatarUrl;
+							}
+
+							// Inject avatar_url into each user that has a profile photo.
+							await MediaFileService.injectUserAvatars(
+								client.getClient(),
+								chatFull.users,
+								data.users as Array<Record<string, unknown>>,
+							);
+
+							return data;
+						},
 					);
 
 					new SuccessResponse(result, "Full chat fetched successfully").send(
@@ -231,9 +286,7 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.DeleteChat({
-								chatId: BigInt(chatId),
-								userId: userId,
-								revokeHistory: revokeHistory,
+								chatId: bigInt(chatId),
 							}),
 						),
 					);
@@ -270,7 +323,7 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.DeleteChatUser({
-								chatId: BigInt(chatId),
+								chatId: bigInt(chatId),
 								userId: userId,
 								revokeHistory: revokeHistory,
 							}),
@@ -311,7 +364,7 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.EditChatAdmin({
-								chatId: BigInt(chatId),
+								chatId: bigInt(chatId),
 								userId,
 								isAdmin,
 							}),
@@ -380,11 +433,9 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.EditChatDefaultBannedRights({
-								peer: new Api.InputPeerChat({ chatId: BigInt(chatId) }),
-								// untilDate is intentionally omitted: Telegram does not support
-								// a time-limited untilDate on group-wide default permissions.
-								// Use channels/EditBanned to set a timed ban on a specific user.
+								peer: new Api.InputPeerChat({ chatId: bigInt(chatId) }),
 								bannedRights: new Api.ChatBannedRights({
+									untilDate: 0,
 									viewMessages,
 									sendMessages,
 									sendMedia,
@@ -452,7 +503,7 @@ export class ChatRoute extends BaseRoute {
 
 							return tc.invoke(
 								new Api.messages.EditChatPhoto({
-									chatId: BigInt(chatId),
+									chatId: bigInt(chatId),
 									photo,
 								}),
 							);
@@ -491,7 +542,7 @@ export class ChatRoute extends BaseRoute {
 					const result = await this.withTelegramSession(sessionId, (client) =>
 						client.getClient().invoke(
 							new Api.messages.EditChatTitle({
-								chatId: BigInt(chatId),
+								chatId: bigInt(chatId),
 								title,
 							}),
 						),

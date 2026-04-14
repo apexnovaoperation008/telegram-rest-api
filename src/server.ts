@@ -11,6 +11,7 @@ import { TelegramClientService } from "./telegram/TelegramClientService";
 import { TelegramSessionWatchdog } from "./telegram/TelegramSessionWatchdog";
 import { DownloadWorkerService } from "./services/DownloadWorkerService";
 import { TenantForwardingScheduler } from "./services/TenantForwardingScheduler";
+import { MediaCleanupScheduler } from "./services/MediaCleanupScheduler";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
@@ -25,6 +26,9 @@ async function bootstrap(): Promise<void> {
 
 	const forwardingScheduler = new TenantForwardingScheduler();
 	forwardingScheduler.start();
+
+	const mediaCleanup = new MediaCleanupScheduler();
+	mediaCleanup.start();
 
 	const app = new Application();
 	app
