@@ -1,12 +1,69 @@
-import { Api } from "telegram";
+import { Api, TelegramClient } from "telegram";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
 import { TelegramUtils, MediaType } from "../../telegram/TelegramUtils";
+import { MediaFileService } from "../../services/MediaFileService";
 
 interface MediaEntry {
 	url: string;
 	type: MediaType;
+}
+
+interface MessageAttachment {
+	file_unique_id: string;
+	file_type: string;
+	url: string | null;
+}
+
+async function downloadMessageAttachments(
+	client: TelegramClient,
+	msg: Api.Message,
+): Promise<MessageAttachment[]> {
+	const { media } = msg;
+	if (!media) return [];
+
+	if (
+		media instanceof Api.MessageMediaPhoto &&
+		media.photo instanceof Api.Photo
+	) {
+		const { photo } = media;
+		const url = await MediaFileService.downloadMessagePhoto(
+			client,
+			photo,
+		).catch((err: unknown) => {
+			console.error(
+				`[GetMessages] Photo download failed for msg ${msg.id}:`,
+				err instanceof Error ? err.message : err,
+			);
+			return null;
+		});
+		return [{ file_unique_id: `photo_${photo.id.toString()}`, file_type: "photo", url }];
+	}
+
+	if (
+		media instanceof Api.MessageMediaDocument &&
+		media.document instanceof Api.Document
+	) {
+		const doc = media.document;
+		let fileType = "document";
+		if (doc.mimeType?.startsWith("video/")) fileType = "video";
+		else if (doc.mimeType?.startsWith("audio/")) fileType = "audio";
+
+		const url = await MediaFileService.downloadMessageDocument(
+			client,
+			doc,
+		).catch((err: unknown) => {
+			console.error(
+				`[GetMessages] Document download failed for msg ${msg.id}:`,
+				err instanceof Error ? err.message : err,
+			);
+			return null;
+		});
+		return [{ file_unique_id: `doc_${doc.id.toString()}`, file_type: fileType, url }];
+	}
+
+	return [];
 }
 
 export class MessageRoute extends BaseRoute {
@@ -281,8 +338,8 @@ export class MessageRoute extends BaseRoute {
 								msgId,
 								big,
 								...(reaction && {
-						reaction: [new Api.ReactionEmoji({ emoticon: reaction })],
-					}),
+									reaction: [new Api.ReactionEmoji({ emoticon: reaction })],
+								}),
 							}),
 						),
 					);
@@ -353,6 +410,126 @@ export class MessageRoute extends BaseRoute {
 						result,
 						"Received messages fetched successfully",
 					).send(reply);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Fetches messages by ID from a private chat / basic group, or from a
+		 * channel / supergroup when `channel` is supplied.
+		 *
+		 * - Omit `channel` for private chats and basic groups.
+		 * - Supply `channel` (username, numeric ID, or `t.me` link) for
+		 *   supergroups and channels.
+		 * - Set `downloadMedia: true` to synchronously download each message's
+		 *   photo / document and inject an `attachments` array into every message.
+		 */
+		fastify.post(
+			"/messages/GetMessages",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const {
+					sessionId,
+					id,
+					channel,
+					downloadMedia = false,
+				} = request.body as {
+					sessionId: string;
+					id: number[];
+					channel?: string;
+					downloadMedia?: boolean;
+				};
+
+				if (!sessionId || !id?.length) {
+					return new ErrorResponse(
+						"sessionId and id are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (clientService) => {
+							const tc = clientService.getClient();
+							const inputIds = id.map(
+								(msgId) => new Api.InputMessageID({ id: msgId }),
+							);
+
+							let rawResult: Api.messages.TypeMessages;
+
+							if (channel) {
+								let resolvedChannel: Awaited<
+									ReturnType<typeof tc.getInputEntity>
+								>;
+								try {
+									resolvedChannel = await tc.getInputEntity(channel);
+								} catch {
+									await tc.getDialogs({ limit: 200 });
+									resolvedChannel = await tc.getInputEntity(channel);
+								}
+
+								rawResult = await tc.invoke(
+									new Api.channels.GetMessages({
+										channel: resolvedChannel,
+										id: inputIds,
+									}),
+								);
+							} else {
+								rawResult = await tc.invoke(
+									new Api.messages.GetMessages({ id: inputIds }),
+								);
+							}
+
+							if (!downloadMedia) return rawResult;
+
+							// Download media for each message concurrently and map
+							// msgId → attachments before serializing.
+							const rawMessages: Api.TypeMessage[] =
+								"messages" in rawResult
+									? (rawResult.messages as Api.TypeMessage[])
+									: [];
+
+							const attachmentsMap = new Map<number, MessageAttachment[]>();
+
+							await Promise.all(
+								rawMessages.map(async (msg) => {
+									if (!(msg instanceof Api.Message)) return;
+									const entries = await downloadMessageAttachments(tc, msg);
+									if (entries.length > 0) {
+										attachmentsMap.set(msg.id, entries);
+									}
+								}),
+							);
+
+							// Serialize (handles BigInteger from GramJS via toJSON())
+							// then inject the downloaded attachment entries.
+							const serialized = JSON.parse(
+								JSON.stringify(rawResult),
+							) as {
+								messages?: Array<Record<string, unknown>>;
+								[key: string]: unknown;
+							};
+
+							if (serialized.messages) {
+								for (const msg of serialized.messages) {
+									const entries = attachmentsMap.get(
+										msg.id as number,
+									);
+									if (entries) {
+										msg.attachments = entries;
+									}
+								}
+							}
+
+							return serialized;
+						},
+					);
+
+					new SuccessResponse(result, "Messages fetched successfully").send(
+						reply,
+					);
 				} catch (error: unknown) {
 					ErrorResponse.fromError(error).send(reply);
 				}

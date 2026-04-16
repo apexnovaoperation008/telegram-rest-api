@@ -6,6 +6,7 @@ import FileType from "file-type";
 import { DatabaseClient } from "../database/DatabaseClient";
 
 const PROFILES_DIR = path.resolve(process.cwd(), "storage", "profiles");
+const MEDIA_DIR = path.resolve(process.cwd(), "storage", "media");
 const STORAGE_BASE_URL = process.env.STORAGE_BASE_URL ?? "";
 const RETENTION_DAYS = parseInt(process.env.MEDIA_RETENTION_DAYS ?? "1", 10);
 
@@ -137,13 +138,76 @@ export class MediaFileService {
 	}
 
 	/**
+	 * Downloads the full-size photo from a message (Api.Photo).
+	 * Files are stored under storage/media/ and tracked for cleanup.
+	 */
+	static async downloadMessagePhoto(
+		client: TelegramClient,
+		photo: Api.Photo,
+	): Promise<string | null> {
+		const fileKey = `msg_photo_${photo.id.toString()}`;
+
+		return this.getOrDownload(
+			fileKey,
+			async () => {
+				const bestSize = photo.sizes[photo.sizes.length - 1];
+				const thumbType =
+					"type" in bestSize ? (bestSize as Api.PhotoSize).type : "y";
+				const location = new Api.InputPhotoFileLocation({
+					id: photo.id,
+					accessHash: photo.accessHash,
+					fileReference: photo.fileReference,
+					thumbSize: thumbType,
+				});
+				const result = await client.downloadFile(location, {
+					dcId: photo.dcId,
+				});
+				return this.toBuffer(result);
+			},
+			MEDIA_DIR,
+			"storage/media",
+		);
+	}
+
+	/**
+	 * Downloads a document (video, audio, file, etc.) from a message.
+	 * Files are stored under storage/media/ and tracked for cleanup.
+	 */
+	static async downloadMessageDocument(
+		client: TelegramClient,
+		document: Api.Document,
+	): Promise<string | null> {
+		const fileKey = `msg_doc_${document.id.toString()}`;
+
+		return this.getOrDownload(
+			fileKey,
+			async () => {
+				const location = new Api.InputDocumentFileLocation({
+					id: document.id,
+					accessHash: document.accessHash,
+					fileReference: document.fileReference,
+					thumbSize: "",
+				});
+				const result = await client.downloadFile(location, {
+					dcId: document.dcId,
+				});
+				return this.toBuffer(result);
+			},
+			MEDIA_DIR,
+			"storage/media",
+		);
+	}
+
+	/**
 	 * Returns the URL for an existing non-expired record (refreshing its expiry),
-	 * or runs the download callback, determines the extension, persists the file
-	 * under storage/profiles/, and tracks it in the DB.
+	 * or runs the download callback, determines the extension, persists the file,
+	 * and tracks it in the DB.
 	 */
 	private static async getOrDownload(
 		fileKey: string,
 		download: () => Promise<Buffer>,
+		storageDir: string = PROFILES_DIR,
+		storageSubPath: string = "storage/profiles",
 	): Promise<string | null> {
 		const db = DatabaseClient.getInstance();
 		const expiresAt = new Date(Date.now() + RETENTION_DAYS * 86_400_000);
@@ -168,15 +232,15 @@ export class MediaFileService {
 		const detected = await FileType.fromBuffer(buffer);
 		const ext = detected?.ext ?? "bin";
 
-		if (!fs.existsSync(PROFILES_DIR)) {
-			fs.mkdirSync(PROFILES_DIR, { recursive: true });
+		if (!fs.existsSync(storageDir)) {
+			fs.mkdirSync(storageDir, { recursive: true });
 		}
 
 		const fileName = `${fileKey}.${ext}`;
-		const filePath = path.join(PROFILES_DIR, fileName);
+		const filePath = path.join(storageDir, fileName);
 		fs.writeFileSync(filePath, buffer);
 
-		const relativePath = `storage/profiles/${fileName}`;
+		const relativePath = `${storageSubPath}/${fileName}`;
 		const fileUrl = STORAGE_BASE_URL
 			? `${STORAGE_BASE_URL.replace(/\/+$/, "")}/${relativePath}`
 			: relativePath;
