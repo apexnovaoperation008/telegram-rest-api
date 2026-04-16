@@ -171,6 +171,8 @@ export class IncomingEventHandler {
 
 	// ── Persistence ─────────────────────────────────────────────────────
 
+	private static readonly UNIQUE_CONFLICT_MAX_RETRIES = 3;
+
 	private async persistMessageWithMedia(
 		sessionRecordId: bigint,
 		rawPayload: string,
@@ -179,99 +181,144 @@ export class IncomingEventHandler {
 		const hasAttachments = mediaList.length > 0;
 		const db = DatabaseClient.getInstance();
 
-		await db.execute(async (prisma) => {
-			return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-				const msgRecord = await tx.message.create({
-					data: {
-						session_id: sessionRecordId,
-						raw_payload: rawPayload,
-						status: hasAttachments ? "pending" : "downloaded",
-					},
-				});
+		for (
+			let attempt = 0;
+			attempt <= IncomingEventHandler.UNIQUE_CONFLICT_MAX_RETRIES;
+			attempt++
+		) {
+			try {
+				await db.execute(async (prisma) => {
+					return prisma.$transaction(
+						async (tx: Prisma.TransactionClient) => {
+							const msgRecord = await tx.message.create({
+								data: {
+									session_id: sessionRecordId,
+									raw_payload: rawPayload,
+									status: hasAttachments ? "pending" : "downloaded",
+								},
+							});
 
-				if (!hasAttachments) return;
+							if (!hasAttachments) return;
 
-				const resolvedUrls: (string | null)[] = [];
+							const resolvedUrls: (string | null)[] = [];
 
-				for (const media of mediaList) {
-					const existing = await tx.downloadTask.findUnique({
-						where: { file_unique_id: media.fileUniqueId },
-					});
-
-					let task;
-					if (!existing) {
-						task = await tx.downloadTask.create({
-							data: {
-								file_unique_id: media.fileUniqueId,
-								file_type: media.fileType,
-								raw_input_json: media.rawInputJson,
-								from_accounts: [sessionRecordId],
-								owner_session_id: sessionRecordId,
-								server_name: SERVER_NAME,
-							},
-						});
-					} else if (existing.status === "failed") {
-						task = await tx.downloadTask.update({
-							where: { id: existing.id },
-							data: {
-								status: "pending",
-								retry_count: 0,
-								raw_input_json: media.rawInputJson,
-								owner_session_id: sessionRecordId,
-								server_name: SERVER_NAME,
-								started_at: null,
-								worker_id: null,
-								...(existing.from_accounts.includes(sessionRecordId)
-									? {}
-									: { from_accounts: { push: sessionRecordId } }),
-							},
-						});
-					} else {
-						// Pending / processing / completed — never overwrite raw_input_json;
-						// the existing data is tied to a specific account's fileReference,
-						// accessHash, and messageId.
-						task = existing.from_accounts.includes(sessionRecordId)
-							? existing
-							: await tx.downloadTask.update({
-									where: { id: existing.id },
-									data: { from_accounts: { push: sessionRecordId } },
+							for (const media of mediaList) {
+								const existing = await tx.downloadTask.findUnique({
+									where: { file_unique_id: media.fileUniqueId },
 								});
-					}
 
-					let fileUrl: string | null = null;
-					if (task.status === "completed") {
-						fileUrl = task.file_url ?? null;
-					}
+								let task;
+								if (!existing) {
+									task = await tx.downloadTask.create({
+										data: {
+											file_unique_id: media.fileUniqueId,
+											file_type: media.fileType,
+											raw_input_json: media.rawInputJson,
+											from_accounts: [sessionRecordId],
+											owner_session_id: sessionRecordId,
+											server_name: SERVER_NAME,
+										},
+									});
+								} else if (existing.status === "failed") {
+									task = await tx.downloadTask.update({
+										where: { id: existing.id },
+										data: {
+											status: "pending",
+											retry_count: 0,
+											raw_input_json: media.rawInputJson,
+											owner_session_id: sessionRecordId,
+											server_name: SERVER_NAME,
+											started_at: null,
+											worker_id: null,
+											...(existing.from_accounts.includes(
+												sessionRecordId,
+											)
+												? {}
+												: {
+														from_accounts: {
+															push: sessionRecordId,
+														},
+													}),
+										},
+									});
+								} else {
+									// Pending / processing / completed — never overwrite raw_input_json;
+									// the existing data is tied to a specific account's fileReference,
+									// accessHash, and messageId.
+									task = existing.from_accounts.includes(
+										sessionRecordId,
+									)
+										? existing
+										: await tx.downloadTask.update({
+												where: { id: existing.id },
+												data: {
+													from_accounts: {
+														push: sessionRecordId,
+													},
+												},
+											});
+								}
 
-					await tx.attachment.create({
-						data: {
-							message_id: msgRecord.id,
-							file_unique_id: media.fileUniqueId,
-							file_type: media.fileType,
-							file_url: fileUrl,
+								let fileUrl: string | null = null;
+								if (task.status === "completed") {
+									fileUrl = task.file_url ?? null;
+								}
+
+								await tx.attachment.create({
+									data: {
+										message_id: msgRecord.id,
+										file_unique_id: media.fileUniqueId,
+										file_type: media.fileType,
+										file_url: fileUrl,
+									},
+								});
+
+								resolvedUrls.push(fileUrl);
+							}
+
+							if (resolvedUrls.every((u) => u !== null)) {
+								let updatedPayload = rawPayload;
+								try {
+									const parsed = JSON.parse(rawPayload);
+									patchPayloadWithMedia(
+										parsed,
+										mediaList,
+										resolvedUrls as string[],
+									);
+									updatedPayload = JSON.stringify(parsed);
+								} catch {
+									// Leave raw_payload unchanged if JSON round-trip fails
+								}
+
+								await tx.message.update({
+									where: { id: msgRecord.id },
+									data: {
+										status: "downloaded",
+										raw_payload: updatedPayload,
+									},
+								});
+							}
 						},
-					});
+					);
+				});
+				return;
+			} catch (error) {
+				const isUniqueViolation =
+					error instanceof Prisma.PrismaClientKnownRequestError &&
+					error.code === "P2002" &&
+					(error.meta?.target as string[] | undefined)?.includes(
+						"file_unique_id",
+					);
 
-					resolvedUrls.push(fileUrl);
+				if (
+					isUniqueViolation &&
+					attempt < IncomingEventHandler.UNIQUE_CONFLICT_MAX_RETRIES
+				) {
+					continue;
 				}
-
-				if (resolvedUrls.every((u) => u !== null)) {
-					let updatedPayload = rawPayload;
-					try {
-						const parsed = JSON.parse(rawPayload);
-						patchPayloadWithMedia(parsed, mediaList, resolvedUrls as string[]);
-						updatedPayload = JSON.stringify(parsed);
-					} catch {
-						// Leave raw_payload unchanged if JSON round-trip fails
-					}
-
-					await tx.message.update({
-						where: { id: msgRecord.id },
-						data: { status: "downloaded", raw_payload: updatedPayload },
-					});
-				}
-			});
-		});
+				throw error;
+			}
+		}
 	}
 
 	// ── Media Extraction ────────────────────────────────────────────────

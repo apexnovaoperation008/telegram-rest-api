@@ -10,7 +10,7 @@ const STORAGE_BASE_URL = process.env.STORAGE_BASE_URL ?? "";
 const RETENTION_DAYS = parseInt(process.env.MEDIA_RETENTION_DAYS ?? "1", 10);
 
 /**
- * Handles synchronous on-demand media downloads (channel avatars, topic icons).
+ * Handles synchronous on-demand media downloads (channel/chat/user avatars).
  * Files are stored under storage/profiles/ and tracked in the media_files table
  * for scheduled cleanup after MEDIA_RETENTION_DAYS days.
  * Repeated calls for the same file_key refresh the expiry rather than
@@ -101,49 +101,6 @@ export class MediaFileService {
 	}
 
 	/**
-	 * Downloads the icon for a forum topic by resolving the custom emoji
-	 * document and downloading it from Telegram.
-	 * The file extension is detected from the downloaded bytes.
-	 */
-	static async downloadTopicIcon(
-		client: TelegramClient,
-		iconEmojiId: string,
-	): Promise<string | null> {
-		const fileKey = `topic_icon_${iconEmojiId}`;
-
-		try {
-			const docs = await client.invoke(
-				new Api.messages.GetCustomEmojiDocuments({
-					documentId: [bigInt(iconEmojiId)],
-				}),
-			);
-
-			if (!docs.length) return null;
-			const doc = docs[0];
-			if (!(doc instanceof Api.Document)) return null;
-
-			return this.getOrDownload(fileKey, async () => {
-				const location = new Api.InputDocumentFileLocation({
-					id: bigInt(doc.id.toString()),
-					accessHash: bigInt(doc.accessHash.toString()),
-					fileReference: doc.fileReference,
-					thumbSize: "",
-				});
-				const result = await client.downloadFile(location, {
-					dcId: doc.dcId ?? 1,
-				});
-				return this.toBuffer(result);
-			});
-		} catch (err) {
-			console.error(
-				`[MediaFileService] Failed to download topic icon ${iconEmojiId}:`,
-				err instanceof Error ? err.message : err,
-			);
-			return null;
-		}
-	}
-
-	/**
 	 * Iterates a raw GramJS users array, downloads each user's profile photo,
 	 * and injects avatar_url into the corresponding entry in the already-serialized
 	 * plain-object users array. Failures are logged and silently skipped.
@@ -181,8 +138,8 @@ export class MediaFileService {
 
 	/**
 	 * Returns the URL for an existing non-expired record (refreshing its expiry),
-	 * or runs the download callback, detects the extension from the buffer's magic
-	 * bytes, persists the file under storage/profiles/, and tracks it in the DB.
+	 * or runs the download callback, determines the extension, persists the file
+	 * under storage/profiles/, and tracks it in the DB.
 	 */
 	private static async getOrDownload(
 		fileKey: string,

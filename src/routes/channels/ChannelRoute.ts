@@ -848,46 +848,32 @@ export class ChannelRoute extends BaseRoute {
 								channelEntry.access_hash = resolvedHash;
 							}
 
-							// ── Forum topic icons ─────────────────────────────────────────
-							// Topics are fetched separately and injected into fullChat so
-							// icon_url sits within the natural full-channel payload structure.
-							if (channelInfo?.forum) {
-								const topicsResult = await tgClient.invoke(
-									new Api.channels.GetForumTopics({
-										channel: this.inputChannel(channelId, resolvedHash),
-										offsetDate: 0,
-										offsetId: 0,
-										offsetTopic: 0,
-										limit: 100,
-									}),
-								);
+						// ── Forum topics ──────────────────────────────────────────────
+						// Topics are fetched separately and injected into fullChat so they
+						// sit within the natural full-channel payload structure.
+						if (channelInfo?.forum) {
+							const topicsResult = await tgClient.invoke(
+								new Api.channels.GetForumTopics({
+									channel: this.inputChannel(channelId, resolvedHash),
+									offsetDate: 0,
+									offsetId: 0,
+									offsetTopic: 0,
+									limit: 100,
+								}),
+							);
 
-								const topics = await Promise.all(
-									topicsResult.topics.map(async (topic: Api.TypeForumTopic) => {
-										const topicData: Record<string, unknown> = JSON.parse(
-											JSON.stringify(topic, (_, v) =>
-												typeof v === "bigint" ? v.toString() : v,
-											),
-										);
+							const topics = topicsResult.topics.map(
+								(topic: Api.TypeForumTopic) =>
+									JSON.parse(
+										JSON.stringify(topic, (_, v) =>
+											typeof v === "bigint" ? v.toString() : v,
+										),
+									),
+							);
 
-										if (topic instanceof Api.ForumTopic && topic.iconEmojiId) {
-											topicData.icon_url =
-												await MediaFileService.downloadTopicIcon(
-													tgClient,
-													topic.iconEmojiId.toString(),
-												);
-										} else {
-											topicData.icon_url = null;
-										}
-
-										return topicData;
-									}),
-								);
-
-								// Attach topics directly into the fullChat object
-								const fullChatEntry = data.fullChat as Record<string, unknown>;
-								fullChatEntry.topics = topics;
-							}
+							const fullChatEntry = data.fullChat as Record<string, unknown>;
+							fullChatEntry.topics = topics;
+						}
 
 							// Inject avatar_url into each user that has a profile photo.
 							await MediaFileService.injectUserAvatars(
