@@ -107,7 +107,7 @@ export class EventHandler {
 			userId: sessionRecord.telegram_user_id,
 			className: "PeerUser",
 		};
-		parsed.out = this.isOutgoingMessage(update);
+		parsed.isOutgoingMessage = this.isOutgoingMessage(update);
 		const rawPayload = JSON.stringify(parsed);
 
 		await this.persistMessageWithMedia(sessionRecord.id, rawPayload, mediaList);
