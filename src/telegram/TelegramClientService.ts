@@ -112,8 +112,8 @@ export class TelegramClientService implements TelegramClientInterface {
 
 	/**
 	 * Invalidates a session: stops its handlers, deletes the session record
-	 * (cascades to messages, attachments, and tenant state), logs out from
-	 * Telegram, and removes it from the pool.
+	 * (cascades to messages and tenant state), logs out from Telegram, and
+	 * removes it from the pool.
 	 *
 	 * Returns `false` if the session does not exist on this server, so callers
 	 * can distinguish between a valid logout and an invalid/foreign session.

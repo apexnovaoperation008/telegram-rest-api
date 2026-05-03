@@ -34,24 +34,16 @@ model TelegramSession {
 // ── Message Pipeline ────────────────────────────────────────────────
 
 enum MessageStatus {
-  pending
   downloaded
   forwarded
   delivery_failed
-}
-
-enum DownloadTaskStatus {
-  pending
-  processing
-  completed
-  failed
 }
 
 model Message {
   id                       BigInt        @id @default(autoincrement())
   session_id               BigInt
   raw_payload              String?       @db.Text
-  status                   MessageStatus @default(pending)
+  status                   MessageStatus @default(downloaded)
   delivery_retry_count     Int           @default(0)
   next_delivery_attempt_at DateTime?
   delivery_failed_at       DateTime?
@@ -59,44 +51,9 @@ model Message {
   created_at               DateTime      @default(now())
   updated_at               DateTime      @updatedAt
   session                  TelegramSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
-  attachments              Attachment[]
 
   @@index([session_id, id, status])
   @@map("messages")
-}
-
-model Attachment {
-  id             BigInt   @id @default(autoincrement())
-  message_id     BigInt
-  file_unique_id String   @db.Text
-  file_type      String   @db.VarChar(50)
-  file_url       String?  @db.Text
-  created_at     DateTime @default(now())
-  message        Message  @relation(fields: [message_id], references: [id], onDelete: Cascade)
-
-  @@index([file_unique_id])
-  @@map("attachments")
-}
-
-model DownloadTask {
-  id               BigInt             @id @default(autoincrement())
-  file_unique_id   String             @unique @db.Text
-  status           DownloadTaskStatus @default(pending)
-  file_path        String?            @db.Text
-  file_url         String?            @db.Text
-  file_type        String?            @db.VarChar(50)
-  raw_input_json   String?            @db.Text
-  from_accounts    BigInt[]
-  owner_session_id BigInt?
-  server_name      String?            @db.VarChar(255)
-  retry_count      Int                @default(0)
-  started_at       DateTime?
-  worker_id        String?            @db.VarChar(255)
-  created_at       DateTime           @default(now())
-
-  @@index([status, created_at])
-  @@index([server_name, status, created_at])
-  @@map("download_tasks")
 }
 
 model TenantMessageState {

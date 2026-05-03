@@ -1,11 +1,14 @@
 import { Api, TelegramClient } from "telegram";
 import { Raw } from "telegram/events";
 import { UpdateConnectionState } from "telegram/network";
-import { Prisma } from "@prisma/client";
+import bigInt from "big-integer";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { DatabaseClient } from "../database/DatabaseClient";
+import { S3UploadService } from "../services/S3UploadService";
 
 const INIT_DELAY_MS = 5000;
-const SERVER_NAME = process.env.SERVER_NAME ?? "";
 
 function patchPayloadWithMedia(
 	parsed: Record<string, unknown>,
@@ -26,9 +29,8 @@ function patchPayloadWithMedia(
 		}));
 	}
 
-	// This function is only called when every URL is already resolved,
-	// meaning all downloads completed successfully.
 	parsed.download_failed = false;
+	parsed.media_downloaded = true;
 }
 
 interface ParsedMedia {
@@ -36,6 +38,28 @@ interface ParsedMedia {
 	fileType: string;
 	rawInputJson: string;
 }
+
+interface RawInputPhoto {
+	type: "photo";
+	id: string;
+	accessHash: string;
+	fileReference: string;
+	thumbSize: string;
+	dcId: number;
+	messageId: number;
+	peerId: string;
+	peerType: "user" | "chat" | "channel";
+}
+
+interface RawInputChatPhoto {
+	type: "chat_photo";
+	photoId: string;
+	peerId: string;
+	peerType: "chat" | "channel" | "user";
+	dcId: number;
+}
+
+type RawInput = RawInputPhoto | RawInputChatPhoto;
 
 export class EventHandler {
 	private readonly client: TelegramClient;
@@ -80,7 +104,6 @@ export class EventHandler {
 	}
 
 	private handleRawUpdate(update: Api.TypeUpdate): void {
-		// Block these events from being persisted
 		if (
 			update instanceof Api.UpdateUserTyping ||
 			update instanceof Api.UpdateChatUserTyping ||
@@ -100,6 +123,7 @@ export class EventHandler {
 		if (sessionRecord === null) return;
 
 		const mediaList = this.extractMediaFromUpdate(update);
+		const hasMedia = this.messageHasMedia(update);
 		const payload = this.extractSerializablePayload(update);
 		const serialized = this.serializeBigInt(payload);
 		const parsed = JSON.parse(serialized) as Record<string, unknown>;
@@ -108,10 +132,130 @@ export class EventHandler {
 			className: "PeerUser",
 		};
 		parsed.isOutgoingMessage = this.isOutgoingMessage(update);
-		const rawPayload = JSON.stringify(parsed);
+		parsed.has_media = hasMedia;
+		parsed.media_downloaded = false;
 
-		await this.persistMessageWithMedia(sessionRecord.id, rawPayload, mediaList);
+		if (mediaList.length > 0) {
+			const urls = await this.downloadMediaInline(mediaList);
+			const allResolved = urls.every((u) => u !== null);
+
+			if (allResolved) {
+				patchPayloadWithMedia(parsed, mediaList, urls as string[]);
+			} else {
+				parsed.download_failed = true;
+			}
+		}
+
+		const rawPayload = JSON.stringify(parsed);
+		const db = DatabaseClient.getInstance();
+		await db.execute((prisma) =>
+			prisma.message.create({
+				data: {
+					session_id: sessionRecord.id,
+					raw_payload: rawPayload,
+					status: "downloaded",
+				},
+			}),
+		);
 	}
+
+	// ── Inline Download ─────────────────────────────────────────────────
+
+	private async downloadMediaInline(
+		mediaList: ParsedMedia[],
+	): Promise<(string | null)[]> {
+		return Promise.all(
+			mediaList.map(async (media) => {
+				try {
+					const rawInput: RawInput = JSON.parse(media.rawInputJson);
+					const buffer = await this.downloadFile(rawInput);
+					if (!buffer || buffer.length === 0) return null;
+					return await this.uploadFile(
+						buffer,
+						media.fileUniqueId,
+						rawInput,
+					);
+				} catch (err) {
+					console.error(
+						`[EventHandler] Inline download failed for ${media.fileUniqueId}:`,
+						err instanceof Error ? err.message : err,
+					);
+					return null;
+				}
+			}),
+		);
+	}
+
+	private async downloadFile(rawInput: RawInput): Promise<Buffer> {
+		if (rawInput.type === "chat_photo") {
+			const peer = await this.resolveInputPeer(rawInput);
+			const location = new Api.InputPeerPhotoFileLocation({
+				peer,
+				photoId: bigInt(rawInput.photoId),
+				big: true,
+			});
+			const result = await this.client.downloadFile(location, {
+				dcId: rawInput.dcId,
+			});
+			return this.toBuffer(result);
+		}
+
+		const location = new Api.InputPhotoFileLocation({
+			id: bigInt(rawInput.id),
+			accessHash: bigInt(rawInput.accessHash),
+			fileReference: Buffer.from(rawInput.fileReference, "base64"),
+			thumbSize: rawInput.thumbSize || "x",
+		});
+		const result = await this.client.downloadFile(location, {
+			dcId: rawInput.dcId,
+		});
+		return this.toBuffer(result);
+	}
+
+	private async uploadFile(
+		buffer: Buffer,
+		fileUniqueId: string,
+		rawInput: RawInput,
+	): Promise<string> {
+		const messageId = "messageId" in rawInput ? rawInput.messageId : 0;
+		const fileName = `${messageId}_${fileUniqueId}.jpg`;
+		const subPath = rawInput.peerId;
+
+		const tmpPath = path.join(os.tmpdir(), `tg_upload_${fileName}`);
+		fs.writeFileSync(tmpPath, buffer);
+		try {
+			return await S3UploadService.upload(
+				buffer,
+				fileName,
+				"image/jpeg",
+				subPath,
+			);
+		} finally {
+			fs.unlink(tmpPath, () => {});
+		}
+	}
+
+	private async resolveInputPeer(
+		rawInput: RawInputChatPhoto,
+	): Promise<Api.TypeInputPeer> {
+		if (rawInput.peerType === "chat") {
+			return new Api.InputPeerChat({ chatId: bigInt(rawInput.peerId) });
+		}
+		const peer =
+			rawInput.peerType === "channel"
+				? new Api.PeerChannel({ channelId: bigInt(rawInput.peerId) })
+				: new Api.PeerUser({ userId: bigInt(rawInput.peerId) });
+		return (await this.client.getInputEntity(peer)) as Api.TypeInputPeer;
+	}
+
+	private toBuffer(result: string | Buffer | undefined): Buffer {
+		if (Buffer.isBuffer(result)) return result;
+		if (typeof result === "string") return Buffer.from(result, "binary");
+		if (result === undefined) return Buffer.alloc(0);
+		return Buffer.from(result as unknown as ArrayBuffer);
+	}
+
+	// ── Serializable Payload ────────────────────────────────────────────
 
 	/**
 	 * Raw updates that carry a `.message` hold circular refs back to the
@@ -170,158 +314,6 @@ export class EventHandler {
 		return null;
 	}
 
-	// ── Persistence ─────────────────────────────────────────────────────
-
-	private static readonly UNIQUE_CONFLICT_MAX_RETRIES = 3;
-
-	private async persistMessageWithMedia(
-		sessionRecordId: bigint,
-		rawPayload: string,
-		mediaList: ParsedMedia[],
-	): Promise<void> {
-		const hasAttachments = mediaList.length > 0;
-		const db = DatabaseClient.getInstance();
-
-		for (
-			let attempt = 0;
-			attempt <= EventHandler.UNIQUE_CONFLICT_MAX_RETRIES;
-			attempt++
-		) {
-			try {
-				await db.execute(async (prisma) => {
-					return prisma.$transaction(
-						async (tx: Prisma.TransactionClient) => {
-							const msgRecord = await tx.message.create({
-								data: {
-									session_id: sessionRecordId,
-									raw_payload: rawPayload,
-									status: hasAttachments ? "pending" : "downloaded",
-								},
-							});
-
-							if (!hasAttachments) return;
-
-							const resolvedUrls: (string | null)[] = [];
-
-							for (const media of mediaList) {
-								const existing = await tx.downloadTask.findUnique({
-									where: { file_unique_id: media.fileUniqueId },
-								});
-
-								let task;
-								if (!existing) {
-									task = await tx.downloadTask.create({
-										data: {
-											file_unique_id: media.fileUniqueId,
-											file_type: media.fileType,
-											raw_input_json: media.rawInputJson,
-											from_accounts: [sessionRecordId],
-											owner_session_id: sessionRecordId,
-											server_name: SERVER_NAME,
-										},
-									});
-								} else if (existing.status === "failed") {
-									task = await tx.downloadTask.update({
-										where: { id: existing.id },
-										data: {
-											status: "pending",
-											retry_count: 0,
-											raw_input_json: media.rawInputJson,
-											owner_session_id: sessionRecordId,
-											server_name: SERVER_NAME,
-											started_at: null,
-											worker_id: null,
-											...(existing.from_accounts.includes(
-												sessionRecordId,
-											)
-												? {}
-												: {
-														from_accounts: {
-															push: sessionRecordId,
-														},
-													}),
-										},
-									});
-								} else {
-									// Pending / processing / completed — never overwrite raw_input_json;
-									// the existing data is tied to a specific account's fileReference,
-									// accessHash, and messageId.
-									task = existing.from_accounts.includes(
-										sessionRecordId,
-									)
-										? existing
-										: await tx.downloadTask.update({
-												where: { id: existing.id },
-												data: {
-													from_accounts: {
-														push: sessionRecordId,
-													},
-												},
-											});
-								}
-
-								let fileUrl: string | null = null;
-								if (task.status === "completed") {
-									fileUrl = task.file_url ?? null;
-								}
-
-								await tx.attachment.create({
-									data: {
-										message_id: msgRecord.id,
-										file_unique_id: media.fileUniqueId,
-										file_type: media.fileType,
-										file_url: fileUrl,
-									},
-								});
-
-								resolvedUrls.push(fileUrl);
-							}
-
-							if (resolvedUrls.every((u) => u !== null)) {
-								let updatedPayload = rawPayload;
-								try {
-									const parsed = JSON.parse(rawPayload);
-									patchPayloadWithMedia(
-										parsed,
-										mediaList,
-										resolvedUrls as string[],
-									);
-									updatedPayload = JSON.stringify(parsed);
-								} catch {
-									// Leave raw_payload unchanged if JSON round-trip fails
-								}
-
-								await tx.message.update({
-									where: { id: msgRecord.id },
-									data: {
-										status: "downloaded",
-										raw_payload: updatedPayload,
-									},
-								});
-							}
-						},
-					);
-				});
-				return;
-			} catch (error) {
-				const isUniqueViolation =
-					error instanceof Prisma.PrismaClientKnownRequestError &&
-					error.code === "P2002" &&
-					(error.meta?.target as string[] | undefined)?.includes(
-						"file_unique_id",
-					);
-
-				if (
-					isUniqueViolation &&
-					attempt < EventHandler.UNIQUE_CONFLICT_MAX_RETRIES
-		) {
-			continue;
-				}
-				throw error;
-			}
-		}
-	}
-
 	// ── Outgoing Detection ──────────────────────────────────────────────
 
 	private isOutgoingMessage(update: Api.TypeUpdate): boolean {
@@ -330,18 +322,55 @@ export class EventHandler {
 		return "out" in message && message.out === true;
 	}
 
+	/**
+	 * Returns true if the message in the update carries any media
+	 * (photo, document, video, audio, or chat photo action).
+	 */
+	private messageHasMedia(update: Api.TypeUpdate): boolean {
+		const message = this.extractMessageFromUpdate(update);
+		if (!message) return false;
+
+		if (message instanceof Api.MessageService) {
+			return (
+				message.action instanceof Api.MessageActionChatEditPhoto &&
+				message.action.photo instanceof Api.Photo
+			);
+		}
+
+		if (message instanceof Api.Message && message.media) {
+			if (
+				message.media instanceof Api.MessageMediaPhoto &&
+				message.media.photo instanceof Api.Photo
+			) {
+				return true;
+			}
+			if (
+				message.media instanceof Api.MessageMediaDocument &&
+				message.media.document instanceof Api.Document
+			) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	// ── Media Extraction ────────────────────────────────────────────────
 
+	/**
+	 * Only extracts photos for automatic download. Documents, videos, and
+	 * audio are not auto-downloaded — use the /messages/DownloadAttachments
+	 * endpoint to download them on demand.
+	 */
 	private extractMedia(msg: Api.Message): ParsedMedia | null {
 		const { media } = msg;
 		if (!media) return null;
-
-		const { peerId, peerType } = this.extractPeerInfo(msg.peerId);
 
 		if (
 			media instanceof Api.MessageMediaPhoto &&
 			media.photo instanceof Api.Photo
 		) {
+			const { peerId, peerType } = this.extractPeerInfo(msg.peerId);
 			const { photo } = media;
 			const bestSize = photo.sizes[photo.sizes.length - 1];
 			const thumbType =
@@ -357,34 +386,6 @@ export class EventHandler {
 					fileReference: Buffer.from(photo.fileReference).toString("base64"),
 					thumbSize: thumbType,
 					dcId: photo.dcId,
-					messageId: msg.id,
-					peerId,
-					peerType,
-				}),
-			};
-		}
-
-		if (
-			media instanceof Api.MessageMediaDocument &&
-			media.document instanceof Api.Document
-		) {
-			const { document: doc } = media;
-			let fileType = "document";
-			if (doc.mimeType?.startsWith("video/")) fileType = "video";
-			else if (doc.mimeType?.startsWith("audio/")) fileType = "audio";
-
-			return {
-				fileUniqueId: `doc_${doc.id.toString()}`,
-				fileType,
-				rawInputJson: JSON.stringify({
-					type: "document",
-					id: doc.id.toString(),
-					accessHash: doc.accessHash.toString(),
-					fileReference: Buffer.from(doc.fileReference).toString("base64"),
-					thumbSize: "",
-					dcId: doc.dcId,
-					mimeType: doc.mimeType,
-					fileName: this.extractFileName(doc),
 					messageId: msg.id,
 					peerId,
 					peerType,
@@ -428,17 +429,6 @@ export class EventHandler {
 			peerId: (peer as Api.PeerUser).userId.toString(),
 			peerType: "user",
 		};
-	}
-
-	private extractFileName(doc: Api.Document): string {
-		for (const attr of doc.attributes) {
-			if (attr instanceof Api.DocumentAttributeFilename) {
-				return attr.fileName;
-			}
-		}
-		const ext =
-			(doc.mimeType ?? "application/octet-stream").split("/")[1] ?? "bin";
-		return `${doc.id}.${ext}`;
 	}
 
 	// ── Helpers ──────────────────────────────────────────────────────────

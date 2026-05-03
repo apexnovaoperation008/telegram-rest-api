@@ -19,20 +19,17 @@ const CALLBACK_MAX_RETRIES = parseInt(
 /**
  * Forwards messages to each session's callback URL in strict FIFO order.
  *
- * Each session's queue is independent — a blocked session (e.g. waiting for
- * an attachment to finish downloading) does not delay any other session.
+ * Each session's queue is independent — one session's failure does not
+ * delay any other session.
  *
- * FIFO guarantee: the next message for a session is only forwarded once the
- * preceding message reaches `downloaded` status.  A `pending` message
- * (attachment still in flight) stops the queue for that session until the
- * DownloadWorkerService marks it `downloaded`.
+ * FIFO guarantee: messages are forwarded in ascending `id` order per session.
  *
  * Retry behaviour: when a callback POST fails the message stays `downloaded`
  * and `next_delivery_attempt_at` is set using a linear back-off
  * (`attempt * CALLBACK_RETRY_BASE_DELAY_S`).  After `CALLBACK_MAX_RETRIES`
  * the message is marked `delivery_failed` and the cursor advances.
  *
- * Successfully delivered messages are deleted (attachments cascade).
+ * Successfully delivered messages are deleted.
  */
 export class TenantForwardingScheduler {
 	private timer: NodeJS.Timeout | null = null;
@@ -141,7 +138,6 @@ export class TenantForwardingScheduler {
 	 * Returns the forwarded message's `id` (the new cursor) on success,
 	 * or `null` when:
 	 *  - There are no more messages to forward
-	 *  - The next message is still `pending` (download in flight)
 	 *  - The next message is waiting for its retry delay to expire
 	 *  - The HTTP POST to the callback URL failed
 	 */
@@ -179,9 +175,6 @@ export class TenantForwardingScheduler {
 				return nextMsg.id;
 			}
 
-			// Attachment still downloading — stop the queue for this session
-			if (nextMsg.status !== "downloaded") return null;
-
 			// Retry delay has not elapsed yet — stop the queue for now
 			if (
 				nextMsg.next_delivery_attempt_at &&
@@ -216,7 +209,6 @@ export class TenantForwardingScheduler {
 
 	/**
 	 * On successful delivery: advance the cursor and delete the message row.
-	 * Attachments are removed automatically via the existing cascade.
 	 */
 	private async handleDeliverySuccess(
 		prisma: PrismaClient,
