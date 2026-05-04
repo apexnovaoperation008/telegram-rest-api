@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
 	pgTable,
 	pgEnum,
@@ -75,7 +76,7 @@ export const tenantMessageState = pgTable("tenant_message_state", {
 		.unique()
 		.references(() => telegramSessions.id, { onDelete: "cascade" }),
 	last_forwarded_id: bigint("last_forwarded_id", { mode: "bigint" })
-		.default(BigInt(0))
+		.default(sql`0`)
 		.notNull(),
 	updated_at: timestamp("updated_at", { precision: 3 })
 		.notNull()
