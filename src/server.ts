@@ -6,6 +6,7 @@ import { UserRoute } from "./routes/user/UserRoute";
 import { MessageRoute } from "./routes/message/MessageRoute";
 import { ChatRoute } from "./routes/message/ChatRoute";
 import { ChannelRoute } from "./routes/channels/ChannelRoute";
+import { ContactRoute } from "./routes/contacts/ContactRoute";
 import { ServerRoute } from "./routes/servers/ServerRoute";
 import { TelegramClientService } from "./telegram/TelegramClientService";
 import { TelegramSessionWatchdog } from "./telegram/TelegramSessionWatchdog";
@@ -39,6 +40,7 @@ async function bootstrap(): Promise<void> {
 			new MessageRoute(),
 			new ChatRoute(),
 			new ChannelRoute(),
+			new ContactRoute(),
 		]);
 
 	await app.start(PORT);
