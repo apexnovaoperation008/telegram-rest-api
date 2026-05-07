@@ -758,14 +758,156 @@ export class MessageRoute extends BaseRoute {
 						},
 					);
 
-					new SuccessResponse(
-						result,
-						"Attachments downloaded and uploaded successfully",
-					).send(reply);
-				} catch (error: unknown) {
-					ErrorResponse.fromError(error).send(reply);
-				}
-			},
-		);
-	}
+			new SuccessResponse(
+					result,
+					"Attachments downloaded and uploaded successfully",
+				).send(reply);
+			} catch (error: unknown) {
+				ErrorResponse.fromError(error).send(reply);
+			}
+		},
+	);
+
+	/**
+	 * Returns the conversation history for a given peer.
+	 *
+	 * Supports pagination via offsetId / offsetDate / addOffset.
+	 * Use minId / maxId to bound the result window.
+	 */
+	fastify.post(
+		"/messages/GetHistory",
+		async (request: FastifyRequest, reply: FastifyReply) => {
+			const {
+				sessionId,
+				peer,
+				offsetId = 0,
+				offsetDate = 0,
+				addOffset = 0,
+				limit = 100,
+				maxId = 0,
+				minId = 0,
+				hash = 0,
+			} = request.body as {
+				sessionId: string;
+				peer: string;
+				offsetId?: number;
+				offsetDate?: number;
+				addOffset?: number;
+				limit?: number;
+				maxId?: number;
+				minId?: number;
+				hash?: number;
+			};
+
+			if (!sessionId || !peer) {
+				return new ErrorResponse("sessionId and peer are required", 400).send(reply);
+			}
+
+			try {
+				const result = await this.withTelegramSession(
+					sessionId,
+					async (clientService) => {
+						const tc = clientService.getClient();
+
+						let resolvedPeer: Awaited<ReturnType<typeof tc.getInputEntity>>;
+						try {
+							resolvedPeer = await tc.getInputEntity(peer);
+						} catch {
+							await tc.getDialogs({ limit: 200 });
+							resolvedPeer = await tc.getInputEntity(peer);
+						}
+
+						const rawResult = await tc.invoke(
+							new Api.messages.GetHistory({
+								peer: resolvedPeer,
+								offsetId,
+								offsetDate,
+								addOffset,
+								limit,
+								maxId,
+								minId,
+								hash: BigInt(hash),
+							}),
+						);
+
+						return rawResult;
+					},
+				);
+
+				new SuccessResponse(result, "History fetched successfully").send(reply);
+			} catch (error: unknown) {
+				ErrorResponse.fromError(error).send(reply);
+			}
+		},
+	);
+
+	/**
+	 * Returns the current user's dialog list (chats, groups, channels).
+	 *
+	 * Supports pagination via offsetDate / offsetId / offsetPeer.
+	 * Set excludePinned: true to omit pinned dialogs.
+	 * Use folderId to list dialogs inside a specific folder.
+	 */
+	fastify.post(
+		"/messages/GetDialogs",
+		async (request: FastifyRequest, reply: FastifyReply) => {
+			const {
+				sessionId,
+				offsetDate = 0,
+				offsetId = 0,
+				offsetPeer = "me",
+				limit = 100,
+				hash = 0,
+				excludePinned = false,
+				folderId,
+			} = request.body as {
+				sessionId: string;
+				offsetDate?: number;
+				offsetId?: number;
+				offsetPeer?: string;
+				limit?: number;
+				hash?: number;
+				excludePinned?: boolean;
+				folderId?: number;
+			};
+
+			if (!sessionId) {
+				return new ErrorResponse("sessionId is required", 400).send(reply);
+			}
+
+			try {
+				const result = await this.withTelegramSession(
+					sessionId,
+					async (clientService) => {
+						const tc = clientService.getClient();
+
+						let resolvedOffsetPeer: Awaited<ReturnType<typeof tc.getInputEntity>>;
+						try {
+							resolvedOffsetPeer = await tc.getInputEntity(offsetPeer);
+						} catch {
+							await tc.getDialogs({ limit: 200 });
+							resolvedOffsetPeer = await tc.getInputEntity(offsetPeer);
+						}
+
+						return tc.invoke(
+							new Api.messages.GetDialogs({
+								offsetDate,
+								offsetId,
+								offsetPeer: resolvedOffsetPeer,
+								limit,
+								hash: BigInt(hash),
+								excludePinned,
+								...(folderId !== undefined && { folderId }),
+							}),
+						);
+					},
+				);
+
+				new SuccessResponse(result, "Dialogs fetched successfully").send(reply);
+			} catch (error: unknown) {
+				ErrorResponse.fromError(error).send(reply);
+			}
+		},
+	);
+}
 }
