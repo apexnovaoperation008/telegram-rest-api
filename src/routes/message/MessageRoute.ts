@@ -1,4 +1,5 @@
 import { Api, TelegramClient } from "telegram";
+import bigInt from "big-integer";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
@@ -826,11 +827,11 @@ export class MessageRoute extends BaseRoute {
 								limit,
 								maxId,
 								minId,
-								hash: BigInt(hash),
-							}),
-						);
+								hash: bigInt(hash),
+						}),
+					);
 
-						return rawResult;
+					return rawResult;
 					},
 				);
 
@@ -895,8 +896,8 @@ export class MessageRoute extends BaseRoute {
 								offsetId,
 								offsetPeer: resolvedOffsetPeer,
 								limit,
-								hash: BigInt(hash),
-								excludePinned,
+							hash: bigInt(hash),
+							excludePinned,
 								...(folderId !== undefined && { folderId }),
 							}),
 						);
