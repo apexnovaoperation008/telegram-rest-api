@@ -682,11 +682,9 @@ export class ChatRoute extends BaseRoute {
 		);
 
 		/**
-		 * Lists exported invite links for a supergroup or channel.
+		 * Lists exported invite links for a group, supergroup, or channel.
 		 *
-		 * NOTE: This endpoint only works for supergroups and channels. Basic
-		 * groups do not support the multi-invite-link system — use
-		 * ExportChatInvite instead, which works for all chat types.
+		 * Works for all chat types (basic groups, supergroups, channels).
 		 *
 		 * Telegram Topics (forum threads): invite links are always at the chat
 		 * level — there are no topic-scoped invite links. This endpoint works
@@ -736,15 +734,6 @@ export class ChatRoute extends BaseRoute {
 							const tc = client.getClient();
 							const peer = await this.resolveChatPeer(tc, chatId, accessHash);
 
-							// This API only supports supergroups and channels.
-							if (peer instanceof Api.InputPeerChat) {
-								throw new Error(
-									"GetExportedChatInvites is only supported for supergroups " +
-									"and channels. Basic groups do not support multiple invite " +
-									"links — use ExportChatInvite instead.",
-								);
-							}
-
 							// Resolve adminId: use the supplied user or fall back to self.
 							let adminId: Api.TypeInputUser = new Api.InputUserSelf();
 							if (adminUserId) {
@@ -791,12 +780,10 @@ export class ChatRoute extends BaseRoute {
 		);
 
 		/**
-		 * Revokes an existing invite link for a supergroup or channel.
+		 * Revokes an existing invite link for a group, supergroup, or channel.
 		 * Pass the full invite URL in `link`.
 		 *
-		 * NOTE: This endpoint only works for supergroups and channels. Basic
-		 * groups do not support the exported-invite management API — use
-		 * ExportChatInvite (which replaces the single permanent link) instead.
+		 * Works for all chat types (basic groups, supergroups, channels).
 		 *
 		 * Telegram Topics (forum threads): invite links are always at the chat
 		 * level — there are no topic-scoped invite links. This endpoint works
@@ -825,15 +812,6 @@ export class ChatRoute extends BaseRoute {
 						async (client) => {
 							const tc = client.getClient();
 							const peer = await this.resolveChatPeer(tc, chatId, accessHash);
-
-							// This API only supports supergroups and channels.
-							if (peer instanceof Api.InputPeerChat) {
-								throw new Error(
-									"RevokeChatInvite is only supported for supergroups and " +
-									"channels. Basic groups do not support the exported-invite " +
-									"management API — use ExportChatInvite instead.",
-								);
-							}
 
 							return tc.invoke(
 								new Api.messages.EditExportedChatInvite({
