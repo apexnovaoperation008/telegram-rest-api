@@ -10,7 +10,25 @@ import { MediaFileService } from "../../services/MediaFileService";
 export class ChatRoute extends BaseRoute {
 	/**
 	 * Builds an InputPeer for a basic group or channel/supergroup.
-	 * Pass `accessHash` for channels; when omitted it is resolved via getEntity.
+	 *
+	 * Peer resolution rules:
+	 * - If `accessHash` is supplied the peer is always treated as a
+	 *   channel/supergroup (`InputPeerChannel`). Basic groups do not have access
+	 *   hashes, so supplying one always implies a channel/supergroup.
+	 *   `chatId` may be in Bot-API format (`-100XXXXXXXXXX`) or raw MTProto
+	 *   format (`XXXXXXXXXX`); both are normalised to a positive MTProto ID
+	 *   automatically.
+	 * - If `accessHash` is omitted the entity is resolved via the session cache /
+	 *   Telegram API and the correct peer type is inferred from the result.
+	 *
+	 * Important: `InputPeerChat` (basic group) is only returned via the fallback
+	 * path. Endpoints that require a supergroup/channel should check the returned
+	 * type and reject `InputPeerChat` with a descriptive error before invoking
+	 * the Telegram API.
+	 *
+	 * Telegram Topics (forum threads) do not have their own invite links — links
+	 * are always issued at the chat level, so topic-enabled supergroups are
+	 * handled identically to regular supergroups here.
 	 */
 	private async resolveChatPeer(
 		client: TelegramClient,
@@ -18,8 +36,12 @@ export class ChatRoute extends BaseRoute {
 		accessHash?: string,
 	): Promise<Api.TypeInputPeer> {
 		if (accessHash) {
+			// Strip the Bot-API "-100" prefix so that InputPeerChannel.channelId
+			// is always a positive MTProto ID. Also strip a bare leading "-" as a
+			// safety fallback (e.g. "-1234" passed by mistake for a channel).
+			const rawId = chatId.replace(/^-100/, "").replace(/^-/, "");
 			return new Api.InputPeerChannel({
-				channelId: bigInt(chatId),
+				channelId: bigInt(rawId),
 				accessHash: bigInt(accessHash),
 			});
 		}
@@ -590,6 +612,12 @@ export class ChatRoute extends BaseRoute {
 		 * Generates an invite link for a basic group, supergroup, or channel.
 		 * For supergroups/channels, pass `accessHash` or omit it to resolve from
 		 * the session cache / Telegram API.
+		 *
+		 * Works for all chat types (basic groups, supergroups, channels).
+		 *
+		 * Telegram Topics (forum threads): invite links are always at the chat
+		 * level — there are no topic-scoped invite links. This endpoint works
+		 * for topic-enabled (forum) supergroups.
 		 */
 		fastify.post(
 			"/chats/ExportChatInvite",
@@ -654,8 +682,20 @@ export class ChatRoute extends BaseRoute {
 		);
 
 		/**
-		 * Lists exported invite links for a supergroup or channel.
-		 * Basic groups only support a single link via ExportChatInvite.
+		 * Lists exported invite links for a group, supergroup, or channel.
+		 *
+		 * Works for all chat types (basic groups, supergroups, channels).
+		 *
+		 * Telegram Topics (forum threads): invite links are always at the chat
+		 * level — there are no topic-scoped invite links. This endpoint works
+		 * for topic-enabled (forum) supergroups.
+		 *
+		 * Pagination: on the first request omit `offsetDate` and `offsetLink`.
+		 * Pass them from the previous response to fetch the next page.
+		 *
+		 * @param adminUserId  Optional. User ID of the admin whose links to list.
+		 *                     Defaults to the authenticated session user.
+		 * @param revoked      Optional. Set to true to list revoked links only.
 		 */
 		fastify.post(
 			"/chats/GetExportedChatInvites",
@@ -664,13 +704,17 @@ export class ChatRoute extends BaseRoute {
 					sessionId,
 					chatId,
 					accessHash,
+					adminUserId,
+					revoked,
 					limit = 100,
-					offsetDate = 0,
-					offsetLink = "",
+					offsetDate,
+					offsetLink,
 				} = request.body as {
 					sessionId: string;
 					chatId: string;
 					accessHash?: string;
+					adminUserId?: string;
+					revoked?: boolean;
 					limit?: number;
 					offsetDate?: number;
 					offsetLink?: string;
@@ -688,19 +732,38 @@ export class ChatRoute extends BaseRoute {
 						sessionId,
 						async (client) => {
 							const tc = client.getClient();
-							const peer = await this.resolveChatPeer(
-								tc,
-								chatId,
-								accessHash,
-							);
+							const peer = await this.resolveChatPeer(tc, chatId, accessHash);
+
+							// Resolve adminId: use the supplied user or fall back to self.
+							let adminId: Api.TypeInputUser = new Api.InputUserSelf();
+							if (adminUserId) {
+								const adminEntity = await tc.getEntity(adminUserId);
+								if (
+									!(adminEntity instanceof Api.User) ||
+									!adminEntity.accessHash
+								) {
+									throw new Error(
+										`Cannot resolve adminUserId ${adminUserId} to a valid user`,
+									);
+								}
+								adminId = new Api.InputUser({
+									userId: adminEntity.id,
+									accessHash: adminEntity.accessHash,
+								});
+							}
 
 							return tc.invoke(
 								new Api.messages.GetExportedChatInvites({
 									peer,
-									adminId: new Api.InputUserSelf(),
+									adminId,
 									limit,
-									offsetDate,
-									offsetLink,
+									...(revoked !== undefined && { revoked }),
+									// offsetDate and offsetLink must be omitted (not zero / empty
+									// string) on the first request — use conditional spread so the
+									// Telegram API treats them as absent rather than as "page 0".
+									...(offsetDate !== undefined &&
+										offsetDate > 0 && { offsetDate }),
+									...(offsetLink ? { offsetLink } : {}),
 								}),
 							);
 						},
@@ -717,8 +780,14 @@ export class ChatRoute extends BaseRoute {
 		);
 
 		/**
-		 * Revokes an existing invite link for a basic group, supergroup, or channel.
-		 * Pass the full invite URL (or hash) in `link`.
+		 * Revokes an existing invite link for a group, supergroup, or channel.
+		 * Pass the full invite URL in `link`.
+		 *
+		 * Works for all chat types (basic groups, supergroups, channels).
+		 *
+		 * Telegram Topics (forum threads): invite links are always at the chat
+		 * level — there are no topic-scoped invite links. This endpoint works
+		 * for topic-enabled (forum) supergroups.
 		 */
 		fastify.post(
 			"/chats/RevokeChatInvite",
