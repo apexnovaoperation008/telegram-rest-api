@@ -1,4 +1,4 @@
-import { Api } from "telegram";
+import { Api, TelegramClient } from "telegram";
 import bigInt from "big-integer";
 import { CustomFile } from "telegram/client/uploads";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -8,6 +8,45 @@ import { TelegramUtils } from "../../telegram/TelegramUtils";
 import { MediaFileService } from "../../services/MediaFileService";
 
 export class ChatRoute extends BaseRoute {
+	/**
+	 * Builds an InputPeer for a basic group or channel/supergroup.
+	 * Pass `accessHash` for channels; when omitted it is resolved via getEntity.
+	 */
+	private async resolveChatPeer(
+		client: TelegramClient,
+		chatId: string,
+		accessHash?: string,
+	): Promise<Api.TypeInputPeer> {
+		if (accessHash) {
+			return new Api.InputPeerChannel({
+				channelId: bigInt(chatId),
+				accessHash: bigInt(accessHash),
+			});
+		}
+
+		const entity = await client.getEntity(bigInt(chatId));
+
+		if (entity instanceof Api.Channel) {
+			if (!entity.accessHash) {
+				throw new Error(
+					`Channel ${chatId} has no accessHash — pass accessHash or ensure the session has access`,
+				);
+			}
+			return new Api.InputPeerChannel({
+				channelId: entity.id,
+				accessHash: entity.accessHash,
+			});
+		}
+
+		if (entity instanceof Api.Chat) {
+			return new Api.InputPeerChat({ chatId: entity.id });
+		}
+
+		throw new Error(
+			`Entity ${chatId} is not a group or channel (got ${entity.className})`,
+		);
+	}
+
 	async register(fastify: FastifyInstance): Promise<void> {
 		/**
 		 * Fetches a page of dialogs using Telegram's native cursor-based pagination.
@@ -541,6 +580,184 @@ export class ChatRoute extends BaseRoute {
 					new SuccessResponse(result, "Chat title updated successfully").send(
 						reply,
 					);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Generates an invite link for a basic group, supergroup, or channel.
+		 * For supergroups/channels, pass `accessHash` or omit it to resolve from
+		 * the session cache / Telegram API.
+		 */
+		fastify.post(
+			"/chats/ExportChatInvite",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const {
+					sessionId,
+					chatId,
+					accessHash,
+					legacyRevokePermanent,
+					requestNeeded,
+					expireDate,
+					usageLimit,
+					title,
+				} = request.body as {
+					sessionId: string;
+					chatId: string;
+					accessHash?: string;
+					legacyRevokePermanent?: boolean;
+					requestNeeded?: boolean;
+					expireDate?: number;
+					usageLimit?: number;
+					title?: string;
+				};
+
+				if (!sessionId || !chatId) {
+					return new ErrorResponse(
+						"sessionId and chatId are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const tc = client.getClient();
+							const peer = await this.resolveChatPeer(tc, chatId, accessHash);
+
+							return tc.invoke(
+								new Api.messages.ExportChatInvite({
+									peer,
+									...(legacyRevokePermanent !== undefined && {
+										legacyRevokePermanent,
+									}),
+									...(requestNeeded !== undefined && { requestNeeded }),
+									...(expireDate !== undefined && { expireDate }),
+									...(usageLimit !== undefined && { usageLimit }),
+									...(title !== undefined && { title }),
+								}),
+							);
+						},
+					);
+
+					new SuccessResponse(
+						result,
+						"Chat invite link generated successfully",
+					).send(reply);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Lists exported invite links for a supergroup or channel.
+		 * Basic groups only support a single link via ExportChatInvite.
+		 */
+		fastify.post(
+			"/chats/GetExportedChatInvites",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const {
+					sessionId,
+					chatId,
+					accessHash,
+					limit = 100,
+					offsetDate = 0,
+					offsetLink = "",
+				} = request.body as {
+					sessionId: string;
+					chatId: string;
+					accessHash?: string;
+					limit?: number;
+					offsetDate?: number;
+					offsetLink?: string;
+				};
+
+				if (!sessionId || !chatId) {
+					return new ErrorResponse(
+						"sessionId and chatId are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const tc = client.getClient();
+							const peer = await this.resolveChatPeer(
+								tc,
+								chatId,
+								accessHash,
+							);
+
+							return tc.invoke(
+								new Api.messages.GetExportedChatInvites({
+									peer,
+									adminId: new Api.InputUserSelf(),
+									limit,
+									offsetDate,
+									offsetLink,
+								}),
+							);
+						},
+					);
+
+					new SuccessResponse(
+						result,
+						"Exported chat invites fetched successfully",
+					).send(reply);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Revokes an existing invite link for a basic group, supergroup, or channel.
+		 * Pass the full invite URL (or hash) in `link`.
+		 */
+		fastify.post(
+			"/chats/RevokeChatInvite",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const { sessionId, chatId, accessHash, link } = request.body as {
+					sessionId: string;
+					chatId: string;
+					accessHash?: string;
+					link: string;
+				};
+
+				if (!sessionId || !chatId || !link) {
+					return new ErrorResponse(
+						"sessionId, chatId and link are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const tc = client.getClient();
+							const peer = await this.resolveChatPeer(tc, chatId, accessHash);
+
+							return tc.invoke(
+								new Api.messages.EditExportedChatInvite({
+									peer,
+									link,
+									revoked: true,
+								}),
+							);
+						},
+					);
+
+					new SuccessResponse(
+						result,
+						"Chat invite link revoked successfully",
+					).send(reply);
 				} catch (error: unknown) {
 					ErrorResponse.fromError(error).send(reply);
 				}
