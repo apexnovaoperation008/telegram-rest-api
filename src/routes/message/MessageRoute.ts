@@ -149,6 +149,7 @@ export class MessageRoute extends BaseRoute {
 				peer,
 				message = "",
 				replyToMsgId = 0,
+				topMsgId = 0,
 				silent = false,
 				background = false,
 				scheduleDate = 0,
@@ -161,6 +162,7 @@ export class MessageRoute extends BaseRoute {
 				peer: string;
 				message?: string;
 				replyToMsgId?: number;
+				topMsgId?: number;
 				silent?: boolean;
 				background?: boolean;
 				scheduleDate?: number;
@@ -222,9 +224,10 @@ export class MessageRoute extends BaseRoute {
 								silent,
 								background,
 								...(scheduleDate && { scheduleDate }),
-								...(replyToMsgId && {
+								...((replyToMsgId || topMsgId) && {
 									replyTo: new Api.InputReplyToMessage({
-										replyToMsgId,
+										replyToMsgId: replyToMsgId || topMsgId,
+										...(topMsgId && { topMsgId }),
 									}),
 								}),
 							};
