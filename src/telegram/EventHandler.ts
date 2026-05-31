@@ -63,6 +63,17 @@ interface RawInputChatPhoto {
 
 type RawInput = RawInputPhoto | RawInputChatPhoto;
 
+/**
+ * The minimal request context needed to reconstruct a sent message when
+ * Telegram replies with a compact `UpdateShortSentMessage` (which omits the
+ * peer and body).
+ */
+export interface SentMessageContext {
+	peer: unknown;
+	message?: string;
+	entities?: Api.TypeMessageEntity[];
+}
+
 export class EventHandler {
 	private readonly client: TelegramClient;
 	private readonly telegramUserId: string;
@@ -103,6 +114,97 @@ export class EventHandler {
 			this.client.removeEventHandler(this.rawHandler, new Raw({}));
 			this.rawHandler = null;
 		}
+	}
+
+	/**
+	 * Persists messages this session sent itself via the API (SendMessage /
+	 * SendMedia / SendMultiMedia).
+	 *
+	 * GramJS returns the result of a send as the RPC response and never routes
+	 * it through the realtime update stream this handler listens on, so without
+	 * this the session's own outgoing messages are never stored or forwarded.
+	 *
+	 * Telegram replies in one of two shapes:
+	 *   - `Updates` / `UpdatesCombined` — carries the full message (media, the
+	 *     self/saved-messages chat, supergroups). We pull the message updates
+	 *     straight out and persist them like any realtime update.
+	 *   - `UpdateShortSentMessage` — a compact ack with only id/date/out and no
+	 *     peer or body (the usual reply for private chats and basic groups). We
+	 *     rebuild the `Message` from the original request the same way GramJS's
+	 *     own `client.sendMessage()` does, tagging `fromId` with the session
+	 *     user so downstream sender attribution is correct.
+	 */
+	async captureSentResult(
+		result: unknown,
+		context: SentMessageContext,
+	): Promise<void> {
+		for (const update of this.buildSentUpdates(result, context)) {
+			await this.persistUpdate(update).catch((err) =>
+				console.error(
+					"[EventHandler] Error persisting sent message:",
+					err instanceof Error ? err.message : err,
+				),
+			);
+		}
+	}
+
+	private buildSentUpdates(
+		result: unknown,
+		context: SentMessageContext,
+	): Api.TypeUpdate[] {
+		if (
+			result instanceof Api.Updates ||
+			result instanceof Api.UpdatesCombined
+		) {
+			return result.updates.filter(
+				(u) =>
+					u instanceof Api.UpdateNewMessage ||
+					u instanceof Api.UpdateNewChannelMessage,
+			);
+		}
+
+		if (result instanceof Api.UpdateShortSentMessage) {
+			const peerId = this.inputPeerToPeer(context.peer);
+			if (!peerId) return [];
+
+			const message = new Api.Message({
+				id: result.id,
+				peerId,
+				fromId: new Api.PeerUser({ userId: bigInt(this.telegramUserId) }),
+				message: context.message ?? "",
+				date: result.date,
+				out: result.out,
+				media: result.media ?? undefined,
+				entities: result.entities ?? context.entities,
+				ttlPeriod: result.ttlPeriod ?? undefined,
+			});
+
+			return [
+				new Api.UpdateNewMessage({
+					message,
+					pts: result.pts,
+					ptsCount: result.ptsCount,
+				}),
+			];
+		}
+
+		return [];
+	}
+
+	private inputPeerToPeer(peer: unknown): Api.TypePeer | null {
+		if (peer instanceof Api.InputPeerUser) {
+			return new Api.PeerUser({ userId: peer.userId });
+		}
+		if (peer instanceof Api.InputPeerChat) {
+			return new Api.PeerChat({ chatId: peer.chatId });
+		}
+		if (peer instanceof Api.InputPeerChannel) {
+			return new Api.PeerChannel({ channelId: peer.channelId });
+		}
+		if (peer instanceof Api.InputPeerSelf) {
+			return new Api.PeerUser({ userId: bigInt(this.telegramUserId) });
+		}
+		return null;
 	}
 
 	private handleRawUpdate(update: Api.TypeUpdate): void {

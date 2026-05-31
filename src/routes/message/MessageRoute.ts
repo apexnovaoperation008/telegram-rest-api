@@ -241,6 +241,11 @@ export class MessageRoute extends BaseRoute {
 								}),
 							);
 							sent.push(r);
+							await clientService.captureSentResult(r, {
+								peer: resolvedPeer,
+								message,
+								entities,
+							});
 							return sent;
 							}
 
@@ -273,6 +278,11 @@ export class MessageRoute extends BaseRoute {
 									}),
 								);
 								sent.push(r);
+								await clientService.captureSentResult(r, {
+									peer: resolvedPeer,
+									message: caption,
+									entities: caption ? entities : undefined,
+								});
 								return;
 								}
 
@@ -355,6 +365,11 @@ export class MessageRoute extends BaseRoute {
 									}),
 								);
 								sent.push(r);
+								await clientService.captureSentResult(r, {
+									peer: resolvedPeer,
+									message: caption,
+									entities: caption ? entities : undefined,
+								});
 							};
 
 							// Send visual media (photos + videos) first, carrying the caption.

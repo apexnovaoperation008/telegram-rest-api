@@ -1,7 +1,7 @@
 import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { eq, and } from "drizzle-orm";
-import { EventHandler } from "./EventHandler";
+import { EventHandler, type SentMessageContext } from "./EventHandler";
 import { DatabaseClient } from "../database/DatabaseClient";
 import { SessionStatus } from "../database/constants/SessionStatus";
 import { TelegramClientInterface } from "./interface/Telegram";
@@ -275,6 +275,22 @@ export class TelegramClientService implements TelegramClientInterface {
 
 	getClient(): TelegramClient {
 		return this.client;
+	}
+
+	/**
+	 * Captures and persists a message this session just sent (via SendMessage /
+	 * SendMedia / SendMultiMedia) by routing the RPC response through the
+	 * session's event handler. No-op when the session has no active handler
+	 * (e.g. a transient, non-pooled client) — such sessions don't forward.
+	 */
+	async captureSentResult(
+		result: unknown,
+		context: SentMessageContext,
+	): Promise<void> {
+		const handler = TelegramClientService.eventHandlers.get(this.sessionId);
+		if (handler) {
+			await handler.captureSentResult(result, context);
+		}
 	}
 
 	getSession(): string {
