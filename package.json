@@ -10,6 +10,7 @@
 		"test": "vitest run",
 		"drizzle:generate": "drizzle-kit generate",
 		"drizzle:migrate": "drizzle-kit migrate",
+		"migrate": "node dist/migrate.js",
 		"drizzle:push": "drizzle-kit push",
 		"drizzle:studio": "drizzle-kit studio"
 	},
