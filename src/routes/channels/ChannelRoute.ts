@@ -745,18 +745,72 @@ export class ChannelRoute extends BaseRoute {
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.channels.EditTitle({
-								channel: this.inputChannel(channelId, accessHash),
-								title,
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (clientService) => {
+							const r = await clientService.getClient().invoke(
+								new Api.channels.EditTitle({
+									channel: this.inputChannel(channelId, accessHash),
+									title,
+								}),
+							);
+							await clientService.captureSentResult(r, { peer: undefined });
+							return r;
+						},
 					);
 
 					new SuccessResponse(
 						result,
 						"Channel title updated successfully",
+					).send(reply);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Changes the title of a forum topic inside a supergroup.
+		 * Requires change-info admin permission.
+		 */
+		fastify.post(
+			"/channels/EditForumTopic",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const { sessionId, channelId, accessHash, topicId, title } =
+					request.body as {
+						sessionId: string;
+						channelId: string;
+						accessHash: string;
+						topicId: string;
+						title: string;
+					};
+
+				if (!sessionId || !channelId || !accessHash || !topicId || !title) {
+					return new ErrorResponse(
+						"sessionId, channelId, accessHash, topicId and title are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (clientService) => {
+							const r = await clientService.getClient().invoke(
+								new Api.channels.EditForumTopic({
+									channel: this.inputChannel(channelId, accessHash),
+									topicId: parseInt(topicId, 10),
+									title,
+								}),
+							);
+							await clientService.captureSentResult(r, { peer: undefined });
+							return r;
+						},
+					);
+
+					new SuccessResponse(
+						result,
+						"Forum topic title updated successfully",
 					).send(reply);
 				} catch (error: unknown) {
 					ErrorResponse.fromError(error).send(reply);
