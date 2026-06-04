@@ -2,7 +2,6 @@ import {
 	S3Client,
 	PutObjectCommand,
 	HeadObjectCommand,
-	ObjectCannedACL,
 } from "@aws-sdk/client-s3";
 
 const S3_BUCKET = process.env.S3_BUCKET ?? "";
@@ -60,8 +59,9 @@ export class S3UploadService {
 	/**
 	 * Builds the public URL for an uploaded object.
 	 *
-	 * - If S3_PUBLIC_URL is set, uses it directly (for CDN, reverse proxy, or
-	 *   when the MinIO/S3 public URL differs from the API endpoint).
+	 * - If S3_PUBLIC_URL is set, it is treated as a base URL that already maps
+	 *   to the bucket root (e.g. a custom domain or CDN), so the result is
+	 *   `{publicUrl}/{key}` and the bucket name is NOT repeated in the path.
 	 * - If S3_ENDPOINT is set (MinIO / self-hosted), uses path-style:
 	 *   `{endpoint}/{bucket}/{key}`
 	 * - Otherwise falls back to AWS virtual-hosted-style:
@@ -69,7 +69,7 @@ export class S3UploadService {
 	 */
 	private static buildPublicUrl(key: string): string {
 		if (S3_PUBLIC_URL) {
-			return `${S3_PUBLIC_URL}/${S3_BUCKET}/${key}`;
+			return `${S3_PUBLIC_URL}/${key}`;
 		}
 		if (S3_ENDPOINT) {
 			return `${S3_ENDPOINT.replace(/\/+$/, "")}/${S3_BUCKET}/${key}`;
@@ -126,13 +126,15 @@ export class S3UploadService {
 
 		const key = this.buildKey(fileName, subPath);
 
+		// No object ACL is sent: buckets with Object Ownership set to
+		// "Bucket owner enforced" reject ACLs. Public access is granted via a
+		// bucket policy instead.
 		await client.send(
 			new PutObjectCommand({
 				Bucket: S3_BUCKET,
 				Key: key,
 				Body: buffer,
 				ContentType: resolvedContentType,
-				ACL: ObjectCannedACL.public_read,
 			}),
 		);
 
