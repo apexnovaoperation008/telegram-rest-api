@@ -159,7 +159,8 @@ export class EventHandler {
 			return result.updates.filter(
 				(u) =>
 					u instanceof Api.UpdateNewMessage ||
-					u instanceof Api.UpdateNewChannelMessage,
+					u instanceof Api.UpdateNewChannelMessage ||
+					u instanceof Api.UpdateChannel,
 			);
 		}
 

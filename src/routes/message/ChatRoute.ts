@@ -538,6 +538,7 @@ export class ChatRoute extends BaseRoute {
 						sessionId,
 						async (client) => {
 							const tc = client.getClient();
+							const peer = new Api.InputPeerChat({ chatId: bigInt(chatId) });
 
 							let photo: Api.TypeInputChatPhoto;
 							if (photoUrl) {
@@ -552,12 +553,14 @@ export class ChatRoute extends BaseRoute {
 								photo = new Api.InputChatPhotoEmpty();
 							}
 
-							return tc.invoke(
+							const result = await tc.invoke(
 								new Api.messages.EditChatPhoto({
 									chatId: bigInt(chatId),
 									photo,
 								}),
 							);
+							await client.captureSentResult(result, { peer });
+							return result;
 						},
 					);
 
@@ -602,6 +605,43 @@ export class ChatRoute extends BaseRoute {
 					new SuccessResponse(result, "Chat title updated successfully").send(
 						reply,
 					);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		fastify.post(
+			"/chats/LeaveGroup",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const { sessionId, chatId } = request.body as {
+					sessionId: string;
+					chatId: string;
+				};
+
+				if (!sessionId || !chatId) {
+					return new ErrorResponse(
+						"sessionId and chatId are required",
+						400,
+					).send(reply);
+				}
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const r = await client.getClient().invoke(
+								new Api.messages.DeleteChatUser({
+									chatId: bigInt(chatId),
+									userId: new Api.InputUserSelf(),
+								}),
+							);
+							await client.captureSentResult(r, { peer: undefined });
+							return r;
+						},
+					);
+
+					new SuccessResponse(result, "Left group successfully").send(reply);
 				} catch (error: unknown) {
 					ErrorResponse.fromError(error).send(reply);
 				}
