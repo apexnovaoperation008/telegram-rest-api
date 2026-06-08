@@ -702,12 +702,14 @@ export class ChannelRoute extends BaseRoute {
 								photo = new Api.InputChatPhotoEmpty();
 							}
 
-							return client.getClient().invoke(
+							const r = await client.getClient().invoke(
 								new Api.channels.EditPhoto({
 									channel: this.inputChannel(channelId, accessHash),
 									photo,
 								}),
 							);
+							await client.captureSentResult(r, { peer: undefined });
+							return r;
 						},
 					);
 
@@ -1203,12 +1205,17 @@ export class ChannelRoute extends BaseRoute {
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.channels.LeaveChannel({
-								channel: this.inputChannel(channelId, accessHash),
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (client) => {
+							const r = await client.getClient().invoke(
+								new Api.channels.LeaveChannel({
+									channel: this.inputChannel(channelId, accessHash),
+								}),
+							);
+							await client.captureSentResult(r, { peer: undefined });
+							return r;
+						},
 					);
 
 					new SuccessResponse(result, "Left channel successfully").send(reply);
