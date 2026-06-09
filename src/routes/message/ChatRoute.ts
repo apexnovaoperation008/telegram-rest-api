@@ -593,13 +593,19 @@ export class ChatRoute extends BaseRoute {
 				}
 
 				try {
-					const result = await this.withTelegramSession(sessionId, (client) =>
-						client.getClient().invoke(
-							new Api.messages.EditChatTitle({
-								chatId: bigInt(chatId),
-								title,
-							}),
-						),
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (clientService) => {
+							const peer = new Api.InputPeerChat({ chatId: bigInt(chatId) });
+							const r = await clientService.getClient().invoke(
+								new Api.messages.EditChatTitle({
+									chatId: bigInt(chatId),
+									title,
+								}),
+							);
+							await clientService.captureSentResult(r, { peer });
+							return r;
+						},
 					);
 
 					new SuccessResponse(result, "Chat title updated successfully").send(
