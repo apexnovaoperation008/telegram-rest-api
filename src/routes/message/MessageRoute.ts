@@ -149,6 +149,7 @@ export class MessageRoute extends BaseRoute {
 				peer,
 				message = "",
 				replyToMsgId = 0,
+				topMsgId = 0,
 				silent = false,
 				background = false,
 				scheduleDate = 0,
@@ -161,6 +162,7 @@ export class MessageRoute extends BaseRoute {
 				peer: string;
 				message?: string;
 				replyToMsgId?: number;
+				topMsgId?: number;
 				silent?: boolean;
 				background?: boolean;
 				scheduleDate?: number;
@@ -222,9 +224,10 @@ export class MessageRoute extends BaseRoute {
 								silent,
 								background,
 								...(scheduleDate && { scheduleDate }),
-								...(replyToMsgId && {
+								...((replyToMsgId || topMsgId) && {
 									replyTo: new Api.InputReplyToMessage({
-										replyToMsgId,
+										replyToMsgId: replyToMsgId || topMsgId,
+										...(topMsgId && { topMsgId }),
 									}),
 								}),
 							};
@@ -655,6 +658,110 @@ export class MessageRoute extends BaseRoute {
 					new SuccessResponse(result, "Messages deleted successfully").send(
 						reply,
 					);
+				} catch (error: unknown) {
+					ErrorResponse.fromError(error).send(reply);
+				}
+			},
+		);
+
+		/**
+		 * Edits an existing message.
+		 *
+		 * - `message`      — new text content (optional if only replacing media)
+		 * - `media`        — URL to replace the attached media (photo / video / file)
+		 * - `mediaType`    — required when `media` is supplied: "photo" | "video" | "file"
+		 * - `entities`     — formatting entities (bold, italic, textUrl, etc.)
+		 * - `noWebpage`    — suppress link preview
+		 * - `invertMedia`  — place media below the caption instead of above
+		 * - `scheduleDate` — Unix timestamp to schedule the edit for later
+		 *
+		 * Works for private chats, basic groups, and channels/supergroups
+		 * (admin with edit-messages permission required for the latter).
+		 */
+		fastify.post(
+			"/messages/EditMessage",
+			async (request: FastifyRequest, reply: FastifyReply) => {
+				const {
+					sessionId,
+					peer,
+					id,
+					message,
+					media: mediaUrl,
+					mediaType,
+					entities: rawEntities,
+					noWebpage = false,
+					invertMedia = false,
+					scheduleDate = 0,
+				} = request.body as {
+					sessionId: string;
+					peer: string;
+					id: number;
+					message?: string;
+					media?: string;
+					mediaType?: MediaType;
+					entities?: RawMessageEntity[];
+					noWebpage?: boolean;
+					invertMedia?: boolean;
+					scheduleDate?: number;
+				};
+
+				if (!sessionId || !peer || !id) {
+					return new ErrorResponse(
+						"sessionId, peer and id are required",
+						400,
+					).send(reply);
+				}
+
+				if (!message && !mediaUrl) {
+					return new ErrorResponse(
+						"At least one of message or media is required",
+						400,
+					).send(reply);
+				}
+
+				if (mediaUrl && !mediaType) {
+					return new ErrorResponse(
+						"mediaType is required when media is supplied",
+						400,
+					).send(reply);
+				}
+
+				const entities = TelegramUtils.buildEntities(rawEntities);
+
+				try {
+					const result = await this.withTelegramSession(
+						sessionId,
+						async (clientService) => {
+							const tc = clientService.getClient();
+
+							let resolvedPeer: Awaited<ReturnType<typeof tc.getInputEntity>>;
+							try {
+								resolvedPeer = await tc.getInputEntity(peer);
+							} catch {
+								await tc.getDialogs({ limit: 200 });
+								resolvedPeer = await tc.getInputEntity(peer);
+							}
+
+							const uploadedMedia = mediaUrl
+								? await TelegramUtils.uploadMedia(tc, mediaUrl, mediaType!)
+								: undefined;
+
+							return tc.invoke(
+								new Api.messages.EditMessage({
+									peer: resolvedPeer,
+									id,
+									...(message !== undefined && { message }),
+									...(uploadedMedia && { media: uploadedMedia }),
+									...(entities && { entities }),
+									...(noWebpage && { noWebpage }),
+									...(invertMedia && { invertMedia }),
+									...(scheduleDate && { scheduleDate }),
+								}),
+							);
+						},
+					);
+
+					new SuccessResponse(result, "Message edited successfully").send(reply);
 				} catch (error: unknown) {
 					ErrorResponse.fromError(error).send(reply);
 				}
