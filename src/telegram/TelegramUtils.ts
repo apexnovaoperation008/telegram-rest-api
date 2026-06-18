@@ -1,6 +1,7 @@
 import { Api, TelegramClient } from "telegram";
 import { CustomFile } from "telegram/client/uploads";
 import bigInt from "big-integer";
+import mime from "mime-types";
 
 export type MediaType = "photo" | "video" | "file";
 
@@ -156,5 +157,38 @@ export class TelegramUtils {
 		return bigInt(Date.now())
 			.multiply(bigInt(1_000))
 			.plus(bigInt(Math.floor(Math.random() * 1_000)));
+	}
+
+	/**
+	 * Resolves a file extension for any document, regardless of type
+	 * (zip, txt, docx, etc.).
+	 *
+	 * The original filename Telegram attaches to the document is the most
+	 * reliable source and is preferred. When a document carries no filename,
+	 * the extension is looked up from its MIME type via the `mime-types`
+	 * database, defaulting to `bin` for unknown types.
+	 */
+	static inferDocExtension(doc: Api.Document): string {
+		for (const attr of doc.attributes) {
+			if (attr instanceof Api.DocumentAttributeFilename) {
+				const parts = attr.fileName.split(".");
+				if (parts.length > 1) {
+					return parts[parts.length - 1].toLowerCase();
+				}
+			}
+		}
+
+		return mime.extension(doc.mimeType ?? "") || "bin";
+	}
+
+	/**
+	 * Classifies a document into a coarse media type used for downstream
+	 * attachment metadata.
+	 */
+	static classifyDocType(doc: Api.Document): "video" | "audio" | "document" {
+		const mimeType = doc.mimeType ?? "";
+		if (mimeType.startsWith("video/")) return "video";
+		if (mimeType.startsWith("audio/")) return "audio";
+		return "document";
 	}
 }

@@ -70,12 +70,10 @@ async function downloadAndUploadToS3(
 		media.document instanceof Api.Document
 	) {
 		const doc = media.document;
-		let fileType = "document";
-		if (doc.mimeType?.startsWith("video/")) fileType = "video";
-		else if (doc.mimeType?.startsWith("audio/")) fileType = "audio";
+		const fileType = TelegramUtils.classifyDocType(doc);
 
 		const fileUniqueId = `doc_${doc.id.toString()}`;
-		const ext = inferDocExtension(doc);
+		const ext = TelegramUtils.inferDocExtension(doc);
 		const fileName = `${msg.id}_${fileUniqueId}.${ext}`;
 
 		const existingUrl = await S3UploadService.exists(
@@ -102,26 +100,6 @@ async function downloadAndUploadToS3(
 	}
 
 	return [];
-}
-
-function inferDocExtension(doc: Api.Document): string {
-	for (const attr of doc.attributes) {
-		if (attr instanceof Api.DocumentAttributeFilename) {
-			const parts = attr.fileName.split(".");
-			if (parts.length > 1) return parts[parts.length - 1];
-		}
-	}
-	const mimeMap: Record<string, string> = {
-		"video/mp4": "mp4",
-		"video/webm": "webm",
-		"audio/ogg": "ogg",
-		"audio/mpeg": "mp3",
-		"application/pdf": "pdf",
-		"image/png": "png",
-		"image/jpeg": "jpg",
-		"image/webp": "webp",
-	};
-	return mimeMap[doc.mimeType ?? ""] ?? "bin";
 }
 
 function toBuffer(result: string | Buffer | undefined): Buffer {

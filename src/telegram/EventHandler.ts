@@ -8,6 +8,7 @@ import * as path from "path";
 import { eq, and } from "drizzle-orm";
 import { DatabaseClient } from "../database/DatabaseClient";
 import { S3UploadService } from "../services/S3UploadService";
+import { TelegramUtils } from "./TelegramUtils";
 import { telegramSessions, messages } from "../database/schema";
 
 const INIT_DELAY_MS = 5000;
@@ -61,7 +62,20 @@ interface RawInputChatPhoto {
 	dcId: number;
 }
 
-type RawInput = RawInputPhoto | RawInputChatPhoto;
+interface RawInputDocument {
+	type: "document";
+	id: string;
+	accessHash: string;
+	fileReference: string;
+	dcId: number;
+	messageId: number;
+	peerId: string;
+	peerType: "user" | "chat" | "channel";
+	mimeType: string;
+	ext: string;
+}
+
+type RawInput = RawInputPhoto | RawInputChatPhoto | RawInputDocument;
 
 /**
  * The minimal request context needed to reconstruct a sent message when
@@ -227,7 +241,10 @@ export class EventHandler {
 		const sessionRecord = await this.resolveSessionRecord();
 		if (sessionRecord === null) return;
 
-		const mediaList = this.extractMediaFromUpdate(update);
+		const isOutgoing = this.isOutgoingMessage(update);
+		// Outgoing messages download every media type; incoming updates stay
+		// restricted to photos (other media is fetched on demand later).
+		const mediaList = this.extractMediaFromUpdate(update, isOutgoing);
 		const hasMedia = this.messageHasMedia(update);
 		const payload = this.extractSerializablePayload(update);
 		const serialized = this.serializeBigInt(payload);
@@ -236,7 +253,7 @@ export class EventHandler {
 			userId: sessionRecord.telegram_user_id,
 			className: "PeerUser",
 		};
-		parsed.isOutgoingMessage = this.isOutgoingMessage(update);
+		parsed.isOutgoingMessage = isOutgoing;
 		parsed.has_media = hasMedia;
 		parsed.media_downloaded = false;
 
@@ -304,6 +321,19 @@ export class EventHandler {
 			return this.toBuffer(result);
 		}
 
+		if (rawInput.type === "document") {
+			const location = new Api.InputDocumentFileLocation({
+				id: bigInt(rawInput.id),
+				accessHash: bigInt(rawInput.accessHash),
+				fileReference: Buffer.from(rawInput.fileReference, "base64"),
+				thumbSize: "",
+			});
+			const result = await this.client.downloadFile(location, {
+				dcId: rawInput.dcId,
+			});
+			return this.toBuffer(result);
+		}
+
 		const location = new Api.InputPhotoFileLocation({
 			id: bigInt(rawInput.id),
 			accessHash: bigInt(rawInput.accessHash),
@@ -322,8 +352,14 @@ export class EventHandler {
 		rawInput: RawInput,
 	): Promise<string> {
 		const messageId = "messageId" in rawInput ? rawInput.messageId : 0;
-		const fileName = `${messageId}_${fileUniqueId}.jpg`;
 		const subPath = rawInput.peerId;
+		const isDocument = rawInput.type === "document";
+		const fileName = isDocument
+			? `${messageId}_${fileUniqueId}.${rawInput.ext}`
+			: `${messageId}_${fileUniqueId}.jpg`;
+		const contentType = isDocument
+			? rawInput.mimeType || undefined
+			: "image/jpeg";
 
 		const tmpPath = path.join(os.tmpdir(), `tg_upload_${fileName}`);
 		fs.writeFileSync(tmpPath, buffer);
@@ -331,7 +367,7 @@ export class EventHandler {
 			return await S3UploadService.upload(
 				buffer,
 				fileName,
-				"image/jpeg",
+				contentType,
 				subPath,
 			);
 		} finally {
@@ -379,7 +415,10 @@ export class EventHandler {
 		return update;
 	}
 
-	private extractMediaFromUpdate(update: Api.TypeUpdate): ParsedMedia[] {
+	private extractMediaFromUpdate(
+		update: Api.TypeUpdate,
+		downloadAllMedia: boolean,
+	): ParsedMedia[] {
 		const message = this.extractMessageFromUpdate(update);
 		if (!message) return [];
 
@@ -395,7 +434,7 @@ export class EventHandler {
 		}
 
 		if (message instanceof Api.Message) {
-			const media = this.extractMedia(message);
+			const media = this.extractMedia(message, downloadAllMedia);
 			return media ? [media] : [];
 		}
 
@@ -462,11 +501,17 @@ export class EventHandler {
 	// ── Media Extraction ────────────────────────────────────────────────
 
 	/**
-	 * Only extracts photos for automatic download. Documents, videos, and
-	 * audio are not auto-downloaded — use the /messages/DownloadAttachments
-	 * endpoint to download them on demand.
+	 * Extracts media for automatic download.
+	 *
+	 * Photos are always extracted. When `downloadAllMedia` is true (e.g. for
+	 * the session's own outgoing messages), documents (files, videos, audio)
+	 * are extracted too. Otherwise non-photo media is left for the
+	 * /messages/DownloadAttachments endpoint to fetch on demand.
 	 */
-	private extractMedia(msg: Api.Message): ParsedMedia | null {
+	private extractMedia(
+		msg: Api.Message,
+		downloadAllMedia: boolean,
+	): ParsedMedia | null {
 		const { media } = msg;
 		if (!media) return null;
 
@@ -493,6 +538,35 @@ export class EventHandler {
 					messageId: msg.id,
 					peerId,
 					peerType,
+				}),
+			};
+		}
+
+		if (
+			downloadAllMedia &&
+			media instanceof Api.MessageMediaDocument &&
+			media.document instanceof Api.Document
+		) {
+			const { peerId, peerType } = this.extractPeerInfo(msg.peerId);
+			const { document } = media;
+			const mimeType = document.mimeType ?? "";
+
+			return {
+				fileUniqueId: `doc_${document.id.toString()}`,
+				fileType: TelegramUtils.classifyDocType(document),
+				rawInputJson: JSON.stringify({
+					type: "document",
+					id: document.id.toString(),
+					accessHash: document.accessHash.toString(),
+					fileReference: Buffer.from(document.fileReference).toString(
+						"base64",
+					),
+					dcId: document.dcId,
+					messageId: msg.id,
+					peerId,
+					peerType,
+					mimeType,
+					ext: TelegramUtils.inferDocExtension(document),
 				}),
 			};
 		}
