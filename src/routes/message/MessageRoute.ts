@@ -964,6 +964,57 @@ export class MessageRoute extends BaseRoute {
 		},
 	);
 
+	fastify.post(
+		"/messages/GetCustomEmojiDocuments",
+		async (request: FastifyRequest, reply: FastifyReply) => {
+			const { sessionId, documentIds } = request.body as {
+				sessionId: string;
+				documentIds: string[];
+			};
+
+			if (!sessionId || !documentIds?.length) {
+				return new ErrorResponse(
+					"sessionId and documentIds are required",
+					400,
+				).send(reply);
+			}
+
+			try {
+				const result = await this.withTelegramSession(
+					sessionId,
+					async (clientService) => {
+						const tc = clientService.getClient();
+
+						const documents = await tc.invoke(
+							new Api.messages.GetCustomEmojiDocuments({
+								documentId: documentIds.map((documentId) => bigInt(documentId)),
+							}),
+						);
+
+						return documents.map((document) => {
+							const customEmojiAttr = document instanceof Api.Document
+								? document.attributes.find(
+										(attribute) => attribute instanceof Api.DocumentAttributeCustomEmoji,
+								  ) as Api.DocumentAttributeCustomEmoji | undefined
+								: undefined;
+
+							return {
+								documentId: document instanceof Api.Document
+									? document.id.toString()
+									: null,
+								alt: customEmojiAttr?.alt ?? null,
+							};
+						});
+					},
+				);
+
+				new SuccessResponse(result, "Custom emoji documents fetched successfully").send(reply);
+			} catch (error: unknown) {
+				ErrorResponse.fromError(error).send(reply);
+			}
+		},
+	);
+
 	/**
 	 * Returns the current user's dialog list (chats, groups, channels).
 	 *
