@@ -2,13 +2,12 @@ import { Client } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import * as dotenv from "dotenv";
+import { getDatabaseConfig } from "./config/database";
 
 dotenv.config();
 
 async function runMigrations() {
-	const client = new Client({
-		connectionString: process.env.DATABASE_URL,
-	});
+	const client = new Client(getDatabaseConfig());
 
 	await client.connect();
 
