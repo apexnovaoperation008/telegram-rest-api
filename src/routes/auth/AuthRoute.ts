@@ -8,6 +8,7 @@ import { TelegramClientService } from "../../telegram/TelegramClientService";
 import { DatabaseClient } from "../../database/DatabaseClient";
 import { SessionStatus } from "../../database/constants/SessionStatus";
 import { telegramSessions } from "../../database/schema";
+import { MediaFileService } from "../../services/MediaFileService";
 
 /**
  * Force telegram session to destroy after each request to avoid memory leaks
@@ -23,7 +24,7 @@ export class AuthRoute extends BaseRoute {
 		authClient: TelegramClientService,
 		user: Api.User,
 		callbackUrl: string,
-	): Promise<void> {
+	): Promise<string | null> {
 		const sessionId = authClient.getSession();
 		const telegramUserId = user.id.toString();
 		const serverName = process.env.SERVER_NAME ?? "";
@@ -41,10 +42,28 @@ export class AuthRoute extends BaseRoute {
 			}),
 		);
 
+		let avatarUrl: string | null = null;
+		if (user.photo instanceof Api.UserProfilePhoto && user.accessHash) {
+			avatarUrl = await MediaFileService.downloadUserPhoto(
+				authClient.getClient(),
+				telegramUserId,
+				user.accessHash.toString(),
+				user.photo,
+			).catch((err) => {
+				console.error(
+					"[saveSession] Avatar download failed:",
+					err instanceof Error ? err.message : err,
+				);
+				return null;
+			});
+		}
+
 		await authClient.destroy();
 
 		const freshClient = await TelegramClientService.initialize(sessionId);
 		TelegramClientService.addToPool(sessionId, freshClient, telegramUserId);
+
+		return avatarUrl;
 	}
 
 	async register(fastify: FastifyInstance): Promise<void> {
@@ -185,14 +204,14 @@ export class AuthRoute extends BaseRoute {
 					);
 
 					const activeSessionId = telegram.getSession();
-					await this.saveSession(
+					const avatarUrl = await this.saveSession(
 						telegram,
 						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 
 					new SuccessResponse(
-						{ result, sessionId: activeSessionId },
+						{ result, sessionId: activeSessionId, avatar_url: avatarUrl },
 						"Signed in successfully",
 					).send(reply);
 				} catch (error: unknown) {
@@ -254,14 +273,14 @@ export class AuthRoute extends BaseRoute {
 					);
 
 					const activeSessionId = telegram.getSession();
-					await this.saveSession(
+					const avatarUrl = await this.saveSession(
 						telegram,
 						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 
 					new SuccessResponse(
-						{ result, sessionId: activeSessionId },
+						{ result, sessionId: activeSessionId, avatar_url: avatarUrl },
 						"Signed up successfully",
 					).send(reply);
 				} catch (error: unknown) {
@@ -337,14 +356,14 @@ export class AuthRoute extends BaseRoute {
 							password: passwordCheck,
 						}),
 					);
-					await this.saveSession(
+					const avatarUrl = await this.saveSession(
 						telegram,
 						(result as Api.auth.Authorization).user as Api.User,
 						callbackUrl,
 					);
 
 					new SuccessResponse(
-						{ result, sessionId },
+						{ result, sessionId, avatar_url: avatarUrl },
 						"Two-factor authentication successful",
 					).send(reply);
 				} catch (error: unknown) {
