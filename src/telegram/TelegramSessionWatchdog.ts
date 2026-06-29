@@ -117,19 +117,24 @@ export class TelegramSessionWatchdog {
 
 		const results = new Map<string, boolean>();
 
-		for (const sessionId of pooledIds) {
-			const client = TelegramClientService.getFromPool(sessionId);
-			if (!client) continue;
+		// Probe all sessions concurrently. Each check is an MTProto round-trip,
+		// so running 100+ sequentially would make a single tick take far longer
+		// than the watchdog interval.
+		await Promise.all(
+			pooledIds.map(async (sessionId) => {
+				const client = TelegramClientService.getFromPool(sessionId);
+				if (!client) return;
 
-			try {
-				results.set(
-					sessionId,
-					await client.getClient().isUserAuthorized(),
-				);
-			} catch {
-				results.set(sessionId, false);
-			}
-		}
+				try {
+					results.set(
+						sessionId,
+						await client.getClient().isUserAuthorized(),
+					);
+				} catch {
+					results.set(sessionId, false);
+				}
+			}),
+		);
 
 		const total = results.size;
 		const failedCount = [...results.values()].filter((v) => !v).length;

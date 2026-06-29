@@ -23,6 +23,42 @@ const CALLBACK_MAX_RETRIES = parseInt(
 );
 
 /**
+ * Maximum number of sessions processed concurrently per tick.
+ *
+ * Each session runs several sequential DB queries plus an outbound HTTP POST,
+ * so fanning out across hundreds of sessions at once would stampede the shared
+ * connection pool. Bounding concurrency keeps the pool healthy while still
+ * draining many sessions in parallel.
+ */
+const FORWARDING_CONCURRENCY = Math.max(
+	1,
+	parseInt(process.env.FORWARDING_CONCURRENCY ?? "10", 10),
+);
+
+/**
+ * Runs `worker` over `items` with at most `limit` concurrent executions.
+ * Worker rejections are swallowed (each session already handles its own
+ * errors) so one failure never aborts the rest of the batch.
+ */
+async function mapWithConcurrency<T>(
+	items: T[],
+	limit: number,
+	worker: (item: T) => Promise<void>,
+): Promise<void> {
+	let cursor = 0;
+	const runners = Array.from(
+		{ length: Math.min(limit, items.length) },
+		async () => {
+			while (cursor < items.length) {
+				const index = cursor++;
+				await worker(items[index]).catch(() => {});
+			}
+		},
+	);
+	await Promise.all(runners);
+}
+
+/**
  * Forwards messages to each session's callback URL in strict FIFO order.
  *
  * Each session's queue is independent — one session's failure does not
@@ -47,6 +83,7 @@ export class TenantForwardingScheduler {
 		this.timer = setInterval(() => this.tick(), FORWARDING_INTERVAL_MS);
 		console.log(
 			`[ForwardingScheduler] Started (interval: ${FORWARDING_INTERVAL_MS}ms, ` +
+				`concurrency: ${FORWARDING_CONCURRENCY}, ` +
 				`retryBase: ${CALLBACK_RETRY_BASE_DELAY_S}s, maxRetries: ${CALLBACK_MAX_RETRIES})`,
 		);
 	}
@@ -85,7 +122,11 @@ export class TenantForwardingScheduler {
 				return result;
 			});
 
-			await Promise.all(rows.map((r) => this.processSession(r.session_id)));
+			await mapWithConcurrency(
+				rows.map((r) => r.session_id),
+				FORWARDING_CONCURRENCY,
+				(sessionId) => this.processSession(sessionId),
+			);
 		} catch (error) {
 			console.error("[ForwardingScheduler] Tick error:", error);
 		} finally {
