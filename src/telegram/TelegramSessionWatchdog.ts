@@ -1,3 +1,4 @@
+import { Api } from "telegram";
 import { eq, and } from "drizzle-orm";
 import { TelegramClientService } from "./TelegramClientService";
 import { DatabaseClient } from "../database/DatabaseClient";
@@ -35,13 +36,19 @@ interface TelegramSessionRecord {
  */
 const REVOKE_AFTER_FAILURES = 10;
 
+/**
+ * Upper bound for a single authorization probe. A hung probe would otherwise
+ * stall the entire watchdog, since ticks are serialised by the `busy` guard.
+ */
+const PROBE_TIMEOUT_MS = 15_000;
+
 export class TelegramSessionWatchdog {
 	private timer: ReturnType<typeof setInterval> | null = null;
 
 	/** Whether a health-check tick is currently in progress. */
 	private busy = false;
 
-	/** Tracks consecutive `isUserAuthorized()` failures per session. */
+	/** Tracks consecutive authorization-probe failures per session. */
 	private readonly failureCounts = new Map<string, number>();
 
 	/** Last lifecycle reason emitted per session, used to avoid callback spam. */
@@ -57,7 +64,7 @@ export class TelegramSessionWatchdog {
 
 		const intervalSec = Math.max(
 			1,
-			parseInt(process.env.WATCHDOG_INTERVAL_SECONDS ?? "60", 3),
+			parseInt(process.env.WATCHDOG_INTERVAL_SECONDS ?? "60", 10),
 		);
 
 		this.timer = setInterval(() => {
@@ -99,6 +106,46 @@ export class TelegramSessionWatchdog {
 	}
 
 	/**
+	 * Performs a fresh MTProto round-trip to determine whether a session's
+	 * auth key is still valid on this tick.
+	 *
+	 * We deliberately avoid gramjs `isUserAuthorized()`: it memoises its result,
+	 * so once a session is observed as unauthorized it never re-checks. That
+	 * left the watchdog permanently reporting stale "all sessions failed"
+	 * even after the underlying connection recovered. A direct `updates.GetState`
+	 * invoke reflects the live state every time. Any error (auth loss, flood,
+	 * or network) is treated as "not authorized" for this tick — the
+	 * majority-failure circuit breaker in the caller absorbs systemic outages.
+	 */
+	private async probeAuthorized(
+		client: TelegramClientService,
+	): Promise<boolean> {
+		try {
+			await this.withTimeout(
+				client.getClient().invoke(new Api.updates.GetState()),
+				PROBE_TIMEOUT_MS,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Rejects with a timeout error if `promise` does not settle within `ms`. */
+	private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+		let timer!: ReturnType<typeof setTimeout>;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error("authorization probe timed out")),
+				ms,
+			);
+		});
+		return Promise.race([promise, timeout]).finally(() =>
+			clearTimeout(timer),
+		);
+	}
+
+	/**
 	 * Scenario 1: Pool contains a session whose user has logged out.
 	 *
 	 * First probes every pooled session with `isUserAuthorized()`, then
@@ -125,14 +172,7 @@ export class TelegramSessionWatchdog {
 				const client = TelegramClientService.getFromPool(sessionId);
 				if (!client) return;
 
-				try {
-					results.set(
-						sessionId,
-						await client.getClient().isUserAuthorized(),
-					);
-				} catch {
-					results.set(sessionId, false);
-				}
+				results.set(sessionId, await this.probeAuthorized(client));
 			}),
 		);
 
