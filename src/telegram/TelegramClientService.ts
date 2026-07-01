@@ -1,5 +1,6 @@
 import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
+import { LogLevel } from "telegram/extensions/Logger";
 import { eq, and } from "drizzle-orm";
 import { EventHandler, type SentMessageContext } from "./EventHandler";
 import { DatabaseClient } from "../database/DatabaseClient";
@@ -53,6 +54,12 @@ export class TelegramClientService implements TelegramClientInterface {
 				maxConcurrentDownloads: 4,
 			},
 		);
+
+		// gramjs logs every connect / disconnect / reconnect step at info/warn.
+		// When a session gets stuck reconnecting (e.g. a contested auth key),
+		// this produced ~100k log lines per minute that were buffered on the
+		// heap and contributed to OOM. Restrict gramjs to errors only.
+		this.client.setLogLevel(LogLevel.ERROR);
 	}
 
 	/**
@@ -77,7 +84,19 @@ export class TelegramClientService implements TelegramClientInterface {
 		}
 
 		const client = new TelegramClientService(apiId, apiHash, sessionId);
-		await client.connect();
+		try {
+			await client.connect();
+		} catch (error) {
+			// A failed connect (e.g. AUTH_KEY_DUPLICATED thrown on the initial
+			// InvokeWithLayer) still leaves gramjs's auto-reconnect machinery
+			// running in the background. If the client isn't torn down it becomes
+			// an orphaned instance that reconnects forever — leaking TCP sockets
+			// and heap until the process OOM-crashes. Destroy it before
+			// surfacing the error so callers (restore/revive/withTelegramSession)
+			// can fail without leaking.
+			await client.destroy().catch(() => {});
+			throw error;
+		}
 		return client;
 	}
 
