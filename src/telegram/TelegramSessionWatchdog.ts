@@ -1,6 +1,7 @@
-import { Api } from "telegram";
+import { Api } from "teleproto";
 import { eq, and } from "drizzle-orm";
 import { TelegramClientService } from "./TelegramClientService";
+import { TelegramUtils } from "./TelegramUtils";
 import { DatabaseClient } from "../database/DatabaseClient";
 import { SessionStatus } from "../database/constants/SessionStatus";
 import {
@@ -41,6 +42,21 @@ const REVOKE_AFTER_FAILURES = 10;
  * stall the entire watchdog, since ticks are serialised by the `busy` guard.
  */
 const PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Credential errors (logged out, revoked session, invalid/duplicated auth
+ * key) are definitive verdicts from Telegram, so they get a short bounded
+ * confirmation — at most {@link CREDENTIAL_MAX_RETRIES} retries spaced
+ * {@link CREDENTIAL_RETRY_DELAY_MS} apart — after which the session is
+ * invalidated and the disconnect callback fired. Without the bound, a
+ * credential-dead session stays ACTIVE in the database and is retried on
+ * every tick forever.
+ */
+const CREDENTIAL_MAX_RETRIES = 2;
+const CREDENTIAL_RETRY_DELAY_MS = 5_000;
+
+/** Result of a single authorization probe. */
+type ProbeOutcome = "authorized" | "credential_error" | "transient_error";
 
 export class TelegramSessionWatchdog {
 	private timer: ReturnType<typeof setInterval> | null = null;
@@ -113,22 +129,51 @@ export class TelegramSessionWatchdog {
 	 * so once a session is observed as unauthorized it never re-checks. That
 	 * left the watchdog permanently reporting stale "all sessions failed"
 	 * even after the underlying connection recovered. A direct `updates.GetState`
-	 * invoke reflects the live state every time. Any error (auth loss, flood,
-	 * or network) is treated as "not authorized" for this tick — the
-	 * majority-failure circuit breaker in the caller absorbs systemic outages.
+	 * invoke reflects the live state every time.
+	 *
+	 * Errors are split into two classes: credential errors (401 /
+	 * AUTH_KEY_DUPLICATED — a definitive verdict from Telegram, the network
+	 * round-trip itself worked) and transient errors (timeouts, flood,
+	 * network) which are absorbed by the majority-failure circuit breaker
+	 * in the caller.
 	 */
-	private async probeAuthorized(
+	private async probeSession(
 		client: TelegramClientService,
-	): Promise<boolean> {
+	): Promise<ProbeOutcome> {
 		try {
 			await this.withTimeout(
 				client.getClient().invoke(new Api.updates.GetState()),
 				PROBE_TIMEOUT_MS,
 			);
-			return true;
-		} catch {
-			return false;
+			return "authorized";
+		} catch (error) {
+			return TelegramUtils.isCredentialError(error)
+				? "credential_error"
+				: "transient_error";
 		}
+	}
+
+	/**
+	 * Re-probes a session that just returned a credential error, up to
+	 * {@link CREDENTIAL_MAX_RETRIES} times at {@link CREDENTIAL_RETRY_DELAY_MS}
+	 * intervals, returning early as soon as a probe comes back authorized.
+	 * The returned outcome is the last probe's result.
+	 */
+	private async reprobeWithRetries(
+		client: TelegramClientService,
+	): Promise<ProbeOutcome> {
+		let outcome: ProbeOutcome = "credential_error";
+		for (let retry = 1; retry <= CREDENTIAL_MAX_RETRIES; retry++) {
+			await this.sleep(CREDENTIAL_RETRY_DELAY_MS);
+			outcome = await this.probeSession(client);
+			if (outcome === "authorized") break;
+		}
+		return outcome;
+	}
+
+	/** Resolves after `ms` milliseconds. */
+	private sleep(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	/** Rejects with a timeout error if `promise` does not settle within `ms`. */
@@ -162,7 +207,7 @@ export class TelegramSessionWatchdog {
 		const pooledIds = TelegramClientService.getPooledSessionIds();
 		if (pooledIds.length === 0) return;
 
-		const results = new Map<string, boolean>();
+		const results = new Map<string, ProbeOutcome>();
 
 		// Probe all sessions concurrently. Each check is an MTProto round-trip,
 		// so running 100+ sequentially would make a single tick take far longer
@@ -172,12 +217,41 @@ export class TelegramSessionWatchdog {
 				const client = TelegramClientService.getFromPool(sessionId);
 				if (!client) return;
 
-				results.set(sessionId, await this.probeAuthorized(client));
+				results.set(sessionId, await this.probeSession(client));
 			}),
 		);
 
+		// Credential errors are a definitive verdict from Telegram (the network
+		// round-trip itself succeeded), so they are exempt from the
+		// network-outage circuit breaker and the slow consecutive-failure
+		// counter below. Confirm with a short bounded retry, then revoke —
+		// otherwise a mass logout would trip the breaker and loop forever.
+		for (const [sessionId, outcome] of [...results]) {
+			if (outcome !== "credential_error") continue;
+			results.delete(sessionId);
+
+			const client = TelegramClientService.getFromPool(sessionId);
+			if (!client) continue;
+
+			const confirmed = await this.reprobeWithRetries(client);
+			if (confirmed === "credential_error") {
+				this.failureCounts.delete(sessionId);
+				this.lastEmittedReason.delete(sessionId);
+				await TelegramClientService.invalidate(sessionId, "unauthorized");
+				console.log(
+					`[Watchdog] Session credential check failed after ${CREDENTIAL_MAX_RETRIES} retries — revoked`,
+				);
+			} else if (confirmed === "authorized") {
+				this.failureCounts.delete(sessionId);
+				this.lastEmittedReason.delete(sessionId);
+			}
+			// transient_error → inconclusive; leave state for the next tick
+		}
+
 		const total = results.size;
-		const failedCount = [...results.values()].filter((v) => !v).length;
+		const failedCount = [...results.values()].filter(
+			(v) => v !== "authorized",
+		).length;
 
 		if (failedCount === total && total > 1) {
 			console.warn(
@@ -198,8 +272,8 @@ export class TelegramSessionWatchdog {
 			{ callback_url: string; telegram_user_id: string }
 		>();
 
-		for (const [sessionId, authorized] of results) {
-			if (authorized) {
+		for (const [sessionId, outcome] of results) {
+			if (outcome === "authorized") {
 				this.failureCounts.delete(sessionId);
 				this.lastEmittedReason.delete(sessionId);
 				continue;
@@ -308,7 +382,7 @@ export class TelegramSessionWatchdog {
 			}
 
 			try {
-				const client = await TelegramClientService.initialize(
+				const client = await this.initializeWithCredentialRetry(
 					session.session_id,
 				);
 				TelegramClientService.addToPool(
@@ -325,6 +399,23 @@ export class TelegramSessionWatchdog {
 					`[Watchdog] Failed to reconnect session id=${session.id}:`,
 					error,
 				);
+
+				// Credential errors survived the bounded retries above — the
+				// session is dead for good. Invalidate it (removes the ACTIVE
+				// database row, so the revive loop stops picking it up) and
+				// fire the existing disconnect callback via invalidate().
+				if (TelegramUtils.isCredentialError(error)) {
+					this.failureCounts.delete(session.session_id);
+					this.lastEmittedReason.delete(session.session_id);
+					await TelegramClientService.invalidate(
+						session.session_id,
+						"unauthorized",
+					);
+					console.log(
+						`[Watchdog] Session id=${session.id} has dead credentials after ${CREDENTIAL_MAX_RETRIES} retries — revoked`,
+					);
+					continue;
+				}
 
 				if (
 					session.callback_url &&
@@ -344,6 +435,35 @@ export class TelegramSessionWatchdog {
 						"reconnect_failed",
 					);
 				}
+			}
+		}
+	}
+
+	/**
+	 * Connects a session, retrying credential errors up to
+	 * {@link CREDENTIAL_MAX_RETRIES} times at {@link CREDENTIAL_RETRY_DELAY_MS}
+	 * intervals. Non-credential errors (network, timeouts) are thrown
+	 * immediately — the regular per-tick revive cadence already retries those.
+	 * If the retries are exhausted the last credential error is thrown, which
+	 * the caller treats as terminal.
+	 */
+	private async initializeWithCredentialRetry(
+		sessionId: string,
+	): Promise<TelegramClientService> {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await TelegramClientService.initialize(sessionId);
+			} catch (error) {
+				if (
+					!TelegramUtils.isCredentialError(error) ||
+					attempt >= CREDENTIAL_MAX_RETRIES
+				) {
+					throw error;
+				}
+				console.warn(
+					`[Watchdog] Credential error on reconnect — retry ${attempt + 1}/${CREDENTIAL_MAX_RETRIES} in ${CREDENTIAL_RETRY_DELAY_MS / 1000}s`,
+				);
+				await this.sleep(CREDENTIAL_RETRY_DELAY_MS);
 			}
 		}
 	}

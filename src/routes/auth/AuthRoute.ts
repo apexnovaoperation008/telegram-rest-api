@@ -1,5 +1,5 @@
-import { Api } from "telegram";
-import { computeCheck } from "telegram/Password";
+import { Api } from "teleproto";
+import { computeCheck } from "teleproto/Password";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq, and } from "drizzle-orm";
 import { BaseRoute } from "../BaseRoute";

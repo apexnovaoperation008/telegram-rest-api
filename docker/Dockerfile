@@ -1,5 +1,6 @@
-# Do not use alpine base image for gramjs: https://github.com/gram-js/gramjs/issues/637
-# Alpine uses musl libc which breaks GramJS's MTProto Diffie-Hellman key exchange
+# Do not use alpine base image for teleproto (GramJS fork — same MTProto stack):
+# https://github.com/gram-js/gramjs/issues/637
+# Alpine uses musl libc which breaks the MTProto Diffie-Hellman key exchange
 FROM node:22-slim AS base
 
 RUN apt-get update -y && apt-get install -y openssl python3 make g++ && rm -rf /var/lib/apt/lists/*

@@ -1,5 +1,10 @@
 const SERVER_NAME = process.env.SERVER_NAME ?? "";
 
+const CALLBACK_TIMEOUT_MS = parseInt(
+	process.env.CALLBACK_TIMEOUT_MS ?? "4000",
+	10,
+);
+
 export type SessionLifecycleEvent =
 	| "telegram_session_removed"
 	| "telegram_session_disconnected";
@@ -50,6 +55,7 @@ export class SessionCallbackService {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(payload),
+				signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
 			});
 
 			if (!res.ok) {

@@ -1,5 +1,5 @@
-import { Api, TelegramClient } from "telegram";
-import { CustomFile } from "telegram/client/uploads";
+import { Api, TelegramClient } from "teleproto";
+import { CustomFile } from "teleproto/client/uploads";
 import bigInt from "big-integer";
 import mime from "mime-types";
 
@@ -67,6 +67,24 @@ export class TelegramUtils {
 			error instanceof Error &&
 			"code" in error &&
 			(error as Error & { code: unknown }).code === 401
+		);
+	}
+
+	/**
+	 * Returns true when the error means the session credentials are dead and
+	 * reconnecting can never succeed: any 401 (AUTH_KEY_UNREGISTERED,
+	 * SESSION_REVOKED, USER_DEACTIVATED, SESSION_EXPIRED, …) or
+	 * AUTH_KEY_DUPLICATED (406), where the server has already invalidated the
+	 * auth key. These are definitive verdicts from Telegram — unlike network
+	 * errors, retrying them indefinitely only loops forever.
+	 */
+	static isCredentialError(error: unknown): boolean {
+		if (TelegramUtils.isUnauthorized(error)) return true;
+		return (
+			error instanceof Error &&
+			"errorMessage" in error &&
+			(error as Error & { errorMessage: unknown }).errorMessage ===
+				"AUTH_KEY_DUPLICATED"
 		);
 	}
 

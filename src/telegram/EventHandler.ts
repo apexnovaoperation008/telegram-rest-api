@@ -1,12 +1,13 @@
-import { Api, TelegramClient } from "telegram";
-import { Raw } from "telegram/events";
-import { UpdateConnectionState } from "telegram/network";
+import { Api, TelegramClient } from "teleproto";
+import { Raw } from "teleproto/events";
+import { UpdateConnectionState } from "teleproto/network";
 import bigInt from "big-integer";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { eq, and } from "drizzle-orm";
 import { DatabaseClient } from "../database/DatabaseClient";
+import { DeliveryDispatcher } from "../services/DeliveryDispatcher";
 import { S3UploadService } from "../services/S3UploadService";
 import { TelegramUtils } from "./TelegramUtils";
 import { telegramSessions, messages } from "../database/schema";
@@ -278,6 +279,8 @@ export class EventHandler {
 				updated_at: new Date(),
 			}),
 		);
+
+		DeliveryDispatcher.wake(sessionRecord.id);
 	}
 
 	// ── Inline Download ─────────────────────────────────────────────────

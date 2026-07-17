@@ -1,6 +1,6 @@
-import { Api, TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { LogLevel } from "telegram/extensions/Logger";
+import { Api, TelegramClient } from "teleproto";
+import { StringSession } from "teleproto/sessions";
+import { LogLevel } from "teleproto/extensions/Logger";
 import { eq, and } from "drizzle-orm";
 import { EventHandler, type SentMessageContext } from "./EventHandler";
 import { DatabaseClient } from "../database/DatabaseClient";
@@ -49,8 +49,12 @@ export class TelegramClientService implements TelegramClientInterface {
 			this.apiId,
 			this.apiHash,
 			{
-				connectionRetries: 10,
-				retryDelay: 2000,
+				// Keep the transport-level connect loop short: the watchdog owns
+				// the retry cadence (it revives unpooled sessions every tick and
+				// caps credential retries), so a failed connect should surface
+				// quickly instead of blocking a tick for 10 × 2s.
+				connectionRetries: 2,
+				retryDelay: 5000,
 				maxConcurrentDownloads: 4,
 			},
 		);

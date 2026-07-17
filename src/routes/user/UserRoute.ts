@@ -1,4 +1,4 @@
-import { Api } from "telegram";
+import { Api } from "teleproto";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
 import { SuccessResponse, ErrorResponse } from "../../http/ApiResponse";
