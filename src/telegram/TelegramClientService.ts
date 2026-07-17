@@ -49,8 +49,12 @@ export class TelegramClientService implements TelegramClientInterface {
 			this.apiId,
 			this.apiHash,
 			{
-				connectionRetries: 10,
-				retryDelay: 2000,
+				// Keep the transport-level connect loop short: the watchdog owns
+				// the retry cadence (it revives unpooled sessions every tick and
+				// caps credential retries), so a failed connect should surface
+				// quickly instead of blocking a tick for 10 × 2s.
+				connectionRetries: 2,
+				retryDelay: 5000,
 				maxConcurrentDownloads: 4,
 			},
 		);
