@@ -1,6 +1,6 @@
-import { Api, TelegramClient } from "telegram";
-import { Raw } from "telegram/events";
-import { UpdateConnectionState } from "telegram/network";
+import { Api, TelegramClient } from "teleproto";
+import { Raw } from "teleproto/events";
+import { UpdateConnectionState } from "teleproto/network";
 import bigInt from "big-integer";
 import * as fs from "fs";
 import * as os from "os";

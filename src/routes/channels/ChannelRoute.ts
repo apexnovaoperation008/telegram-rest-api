@@ -1,6 +1,6 @@
-import { Api, TelegramClient } from "telegram";
-import { computeCheck } from "telegram/Password";
-import { CustomFile } from "telegram/client/uploads";
+import { Api, TelegramClient } from "teleproto";
+import { computeCheck } from "teleproto/Password";
+import { CustomFile } from "teleproto/client/uploads";
 import bigInt from "big-integer";
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BaseRoute } from "../BaseRoute";
@@ -642,8 +642,8 @@ export class ChannelRoute extends BaseRoute {
 							const srpCheck = await computeCheck(passwordInfo, twoFaPassword);
 
 							return client.getClient().invoke(
-								new Api.channels.EditCreator({
-									channel: this.inputChannel(channelId, accessHash),
+								new Api.messages.EditChatCreator({
+									peer: this.inputChannel(channelId, accessHash),
 									userId: this.inputUser(userId, userAccessHash),
 									password: srpCheck,
 								}),
@@ -797,8 +797,8 @@ export class ChannelRoute extends BaseRoute {
 						sessionId,
 						async (clientService) => {
 							const r = await clientService.getClient().invoke(
-								new Api.channels.EditForumTopic({
-									channel: this.inputChannel(channelId, accessHash),
+								new Api.messages.EditForumTopic({
+									peer: this.inputChannel(channelId, accessHash),
 									topicId: parseInt(topicId, 10),
 									title,
 								}),
@@ -908,8 +908,8 @@ export class ChannelRoute extends BaseRoute {
 						// sit within the natural full-channel payload structure.
 						if (channelInfo?.forum) {
 							const topicsResult = await tgClient.invoke(
-								new Api.channels.GetForumTopics({
-									channel: this.inputChannel(channelId, resolvedHash),
+								new Api.messages.GetForumTopics({
+									peer: this.inputChannel(channelId, resolvedHash),
 									offsetDate: 0,
 									offsetId: 0,
 									offsetTopic: 0,

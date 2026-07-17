@@ -1,5 +1,5 @@
-import { Api, TelegramClient } from "telegram";
-import { CustomFile } from "telegram/client/uploads";
+import { Api, TelegramClient } from "teleproto";
+import { CustomFile } from "teleproto/client/uploads";
 import bigInt from "big-integer";
 import mime from "mime-types";
 

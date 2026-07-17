@@ -1,4 +1,4 @@
-import { Api, TelegramClient } from "telegram";
+import { Api, TelegramClient } from "teleproto";
 import bigInt from "big-integer";
 import FileType from "file-type";
 import { S3UploadService } from "./S3UploadService";

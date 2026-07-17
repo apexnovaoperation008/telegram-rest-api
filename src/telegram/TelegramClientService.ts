@@ -1,6 +1,6 @@
-import { Api, TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { LogLevel } from "telegram/extensions/Logger";
+import { Api, TelegramClient } from "teleproto";
+import { StringSession } from "teleproto/sessions";
+import { LogLevel } from "teleproto/extensions/Logger";
 import { eq, and } from "drizzle-orm";
 import { EventHandler, type SentMessageContext } from "./EventHandler";
 import { DatabaseClient } from "../database/DatabaseClient";

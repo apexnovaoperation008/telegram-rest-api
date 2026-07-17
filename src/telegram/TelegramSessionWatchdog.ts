@@ -1,4 +1,4 @@
-import { Api } from "telegram";
+import { Api } from "teleproto";
 import { eq, and } from "drizzle-orm";
 import { TelegramClientService } from "./TelegramClientService";
 import { DatabaseClient } from "../database/DatabaseClient";
