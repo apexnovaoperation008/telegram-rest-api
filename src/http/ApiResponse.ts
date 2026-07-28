@@ -50,7 +50,18 @@ export class ErrorResponse extends ApiResponse {
     const code = (error instanceof Error && 'code' in error && typeof (error as Error & { code: unknown }).code === 'number')
       ? (error as Error & { code: number }).code
       : fallbackCode;
-    return new ErrorResponse(message, code);
+    return new ErrorResponse(ErrorResponse.withTelegramErrorCode(message, error), code);
+  }
+
+  private static withTelegramErrorCode(message: string, error: unknown): string {
+    if (!(error instanceof Error) || !('errorMessage' in error)) return message;
+
+    const errorMessage = (error as Error & { errorMessage: unknown }).errorMessage;
+    if (typeof errorMessage !== 'string' || !/^[A-Z][A-Z0-9_]*$/.test(errorMessage)) {
+      return message;
+    }
+
+    return message.includes(errorMessage) ? message : `${message} [${errorMessage}]`;
   }
 
   toJSON(): ApiResponseBody {
