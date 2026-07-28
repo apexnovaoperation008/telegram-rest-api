@@ -1,4 +1,4 @@
-import { Api, TelegramClient } from "teleproto";
+import { Api, TelegramClient, utils } from "teleproto";
 import { CustomFile } from "teleproto/client/uploads";
 import bigInt from "big-integer";
 import mime from "mime-types";
@@ -11,6 +11,7 @@ export interface RawMessageEntity {
 	length: number;
 	url?: string;
 	userId?: string | number;
+	accessHash?: string | number;
 	language?: string;
 }
 
@@ -44,18 +45,33 @@ const ENTITY_FACTORIES: Record<
 			url: e.url,
 		});
 	},
-	mentionName: (e) => {
-		if (e.userId == null) return null;
-		return new Api.InputMessageEntityMentionName({
-			offset: e.offset,
-			length: e.length,
-			userId: new Api.InputUser({
-				userId: bigInt(String(e.userId)),
-				accessHash: bigInt.zero,
-			}),
-		});
-	},
 };
+
+async function buildMentionEntity(
+	e: RawMessageEntity,
+	client?: TelegramClient,
+): Promise<Api.TypeMessageEntity | null> {
+	if (e.userId == null) return null;
+	const userId = bigInt(String(e.userId));
+
+	let inputUser: Api.TypeInputUser | null = null;
+	if (e.accessHash != null && String(e.accessHash) !== "") {
+		inputUser = new Api.InputUser({ userId, accessHash: bigInt(String(e.accessHash)) });
+	} else if (client) {
+		try {
+			inputUser = utils.getInputUser(await client.getInputEntity(userId));
+		} catch {
+			inputUser = null;
+		}
+	}
+	if (!inputUser) return null;
+
+	return new Api.InputMessageEntityMentionName({
+		offset: e.offset,
+		length: e.length,
+		userId: inputUser,
+	});
+}
 
 export class TelegramUtils {
 	/**
@@ -153,16 +169,22 @@ export class TelegramUtils {
 	 * Combines the current timestamp with a random component to avoid collisions.
 	 */
 	/**
-	 * Converts raw JSON entity descriptors into GramJS MessageEntity instances.
+	 * Converts raw JSON entity descriptors into teleproto MessageEntity instances.
 	 * Unknown types or entities missing required fields are silently skipped.
 	 */
-	static buildEntities(
+	static async buildEntities(
 		raw: RawMessageEntity[] | undefined,
-	): Api.TypeMessageEntity[] | undefined {
+		client?: TelegramClient,
+	): Promise<Api.TypeMessageEntity[] | undefined> {
 		if (!raw || raw.length === 0) return undefined;
 
 		const mapped: Api.TypeMessageEntity[] = [];
 		for (const entry of raw) {
+			if (entry.type === "mention" || entry.type === "mentionName") {
+				const mention = await buildMentionEntity(entry, client);
+				if (mention) mapped.push(mention);
+				continue;
+			}
 			const factory = ENTITY_FACTORIES[entry.type];
 			if (!factory) continue;
 			const entity = factory(entry);
