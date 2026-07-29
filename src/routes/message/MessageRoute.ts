@@ -150,7 +150,6 @@ export class MessageRoute extends BaseRoute {
 				entities?: RawMessageEntity[];
 			};
 
-			const entities = TelegramUtils.buildEntities(rawEntities);
 
 				if (!sessionId || !peer) {
 					return new ErrorResponse("sessionId and peer are required", 400).send(
@@ -197,6 +196,8 @@ export class MessageRoute extends BaseRoute {
 								await tc.getDialogs({ limit: 200 });
 								resolvedPeer = await tc.getInputEntity(peer);
 							}
+
+							const entities = await TelegramUtils.buildEntities(rawEntities, tc);
 
 							const commonFlags = {
 								silent,
@@ -704,7 +705,6 @@ export class MessageRoute extends BaseRoute {
 					).send(reply);
 				}
 
-				const entities = TelegramUtils.buildEntities(rawEntities);
 
 				try {
 					const result = await this.withTelegramSession(
@@ -719,6 +719,8 @@ export class MessageRoute extends BaseRoute {
 								await tc.getDialogs({ limit: 200 });
 								resolvedPeer = await tc.getInputEntity(peer);
 							}
+
+							const entities = await TelegramUtils.buildEntities(rawEntities, tc);
 
 							const uploadedMedia = mediaUrl
 								? await TelegramUtils.uploadMedia(tc, mediaUrl, mediaType!)
