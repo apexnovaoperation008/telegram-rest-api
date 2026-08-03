@@ -87,6 +87,7 @@ export interface SentMessageContext {
 	peer: unknown;
 	message?: string;
 	entities?: Api.TypeMessageEntity[];
+	replyToMessageId?: number;
 }
 
 export class EventHandler {
@@ -192,6 +193,9 @@ export class EventHandler {
 				out: result.out,
 				media: result.media ?? undefined,
 				entities: result.entities ?? context.entities,
+				replyTo: context.replyToMessageId
+					? new Api.MessageReplyHeader({ replyToMsgId: context.replyToMessageId })
+					: undefined,
 				ttlPeriod: result.ttlPeriod ?? undefined,
 			});
 

@@ -227,6 +227,7 @@ export class MessageRoute extends BaseRoute {
 								peer: resolvedPeer,
 								message,
 								entities,
+								replyToMessageId: replyToMsgId || topMsgId || undefined,
 							});
 							return sent;
 							}
