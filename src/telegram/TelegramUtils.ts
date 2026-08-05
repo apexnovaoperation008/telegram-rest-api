@@ -3,7 +3,7 @@ import { CustomFile } from "teleproto/client/uploads";
 import bigInt from "big-integer";
 import mime from "mime-types";
 
-export type MediaType = "photo" | "video" | "file";
+export type MediaType = "photo" | "video" | "file" | "voice";
 
 export interface RawMessageEntity {
 	type: string;
@@ -150,6 +150,19 @@ export class TelegramUtils {
 
 		if (type === "photo") {
 			return new Api.InputMediaUploadedPhoto({ file: uploadedFile });
+		}
+
+		// Voice notes must carry DocumentAttributeAudio with the voice flag —
+		// without it Telegram only renders a voice bubble when its server
+		// happens to auto-detect a clean Ogg/Opus file, which is unreliable.
+		if (type === "voice") {
+			return new Api.InputMediaUploadedDocument({
+				file: uploadedFile,
+				mimeType: "audio/ogg",
+				attributes: [
+					new Api.DocumentAttributeAudio({ duration: 0, voice: true }),
+				],
+			});
 		}
 
 		const attributes: Api.TypeDocumentAttribute[] =
