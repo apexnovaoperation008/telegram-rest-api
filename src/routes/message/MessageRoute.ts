@@ -134,6 +134,7 @@ export class MessageRoute extends BaseRoute {
 				photos = [],
 				videos = [],
 				files = [],
+				voices = [],
 				entities: rawEntities,
 			} = request.body as {
 				sessionId: string;
@@ -147,6 +148,7 @@ export class MessageRoute extends BaseRoute {
 				photos?: string[];
 				videos?: string[];
 				files?: string[];
+				voices?: string[];
 				entities?: RawMessageEntity[];
 			};
 
@@ -159,12 +161,14 @@ export class MessageRoute extends BaseRoute {
 
 				const hasVisual = photos.length > 0 || videos.length > 0;
 				const hasDocs = files.length > 0;
+				const hasVoices = voices.length > 0;
 
 				// Telegram does not allow mixing visual media (photos/videos) with
-				// documents in the same request. Reject early with a clear message.
-				if (hasVisual && hasDocs) {
+				// documents in the same request, and voice notes cannot be part of
+				// any album. Reject early with a clear message.
+				if ((hasVisual && hasDocs) || (hasVoices && (hasVisual || hasDocs))) {
 					return new ErrorResponse(
-						"Cannot mix photos/videos with files in the same request. Send them in separate requests.",
+						"Cannot mix photos/videos, files and voices in the same request. Send them in separate requests.",
 						400,
 					).send(reply);
 				}
@@ -176,6 +180,10 @@ export class MessageRoute extends BaseRoute {
 				const docMedia: MediaEntry[] = files.map((url) => ({
 					url,
 					type: "file" as const,
+				}));
+				const voiceMedia: MediaEntry[] = voices.map((url) => ({
+					url,
+					type: "voice" as const,
 				}));
 
 				try {
@@ -212,7 +220,11 @@ export class MessageRoute extends BaseRoute {
 							};
 
 							// No media at all → plain text message
-							if (visualMedia.length === 0 && docMedia.length === 0) {
+							if (
+								visualMedia.length === 0 &&
+								docMedia.length === 0 &&
+								voiceMedia.length === 0
+							) {
 							const r = await tc.invoke(
 								new Api.messages.SendMessage({
 									peer: resolvedPeer,
@@ -362,6 +374,12 @@ export class MessageRoute extends BaseRoute {
 								docMedia,
 								visualMedia.length === 0 ? message : "",
 							);
+
+							// Voice notes cannot be grouped into albums — send each as
+							// its own message, with the caption on the first one only.
+							for (let i = 0; i < voiceMedia.length; i++) {
+								await sendGroup([voiceMedia[i]], i === 0 ? message : "");
+							}
 
 							return sent;
 						},
