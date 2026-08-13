@@ -4,17 +4,22 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: production
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
       - ./storage:/app/storage
     environment:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
+      # Hosts are 4GB and dedicated to this stack; default V8 heap (~2GB) was
+      # exhausted in production (fatal OOM abort). Leave ~1GB for native/system.
+      - NODE_OPTIONS=--max-old-space-size=2560
 
   # Proxies all traffic to the API, except /storage/ which is served directly.
   # Update STORAGE_BASE_URL in .env to the nginx host (e.g. http://<host>).
   nginx:
     image: nginx:alpine
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"

@@ -11,6 +11,7 @@ import { ServerRoute } from "./routes/servers/ServerRoute";
 import { TelegramClientService } from "./telegram/TelegramClientService";
 import { TelegramSessionWatchdog } from "./telegram/TelegramSessionWatchdog";
 import { TenantForwardingScheduler } from "./services/TenantForwardingScheduler";
+import { HeapPressureGuard } from "./services/HeapPressureGuard";
 import { S3UploadService } from "./services/S3UploadService";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -29,6 +30,9 @@ async function bootstrap(): Promise<void> {
 
 	const forwardingScheduler = new TenantForwardingScheduler();
 	forwardingScheduler.start();
+
+	const heapGuard = new HeapPressureGuard();
+	heapGuard.start();
 
 	const app = new Application();
 	app
