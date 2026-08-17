@@ -14,6 +14,12 @@ import { telegramSessions, messages } from "../database/schema";
 
 const INIT_DELAY_MS = 5000;
 
+const AUTO_DOWNLOAD_MEDIA = !["false", "0", "no", "off"].includes(
+	(process.env.AUTO_DOWNLOAD_IMAGE_WHEN_RECEIVE ?? "true")
+		.trim()
+		.toLowerCase(),
+);
+
 function patchPayloadWithMedia(
 	parsed: Record<string, unknown>,
 	mediaList: ParsedMedia[],
@@ -262,7 +268,7 @@ export class EventHandler {
 		parsed.has_media = hasMedia;
 		parsed.media_downloaded = false;
 
-		if (mediaList.length > 0) {
+		if (mediaList.length > 0 && AUTO_DOWNLOAD_MEDIA) {
 			const urls = await this.downloadMediaInline(mediaList);
 			const allResolved = urls.every((u) => u !== null);
 
