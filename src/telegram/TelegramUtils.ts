@@ -160,6 +160,7 @@ export class TelegramUtils {
 		telegramClient: TelegramClient,
 		url: string,
 		type: MediaType,
+		duration = 0,
 	): Promise<Api.TypeInputMedia> {
 		const { buffer, filename, mimeType } =
 			await TelegramUtils.downloadFromUrl(url);
@@ -181,7 +182,7 @@ export class TelegramUtils {
 				file: uploadedFile,
 				mimeType: "audio/ogg",
 				attributes: [
-					new Api.DocumentAttributeAudio({ duration: 0, voice: true }),
+					new Api.DocumentAttributeAudio({ duration, voice: true }),
 				],
 			});
 		}

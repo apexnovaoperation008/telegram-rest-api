@@ -13,6 +13,7 @@ import { S3UploadService } from "../../services/S3UploadService";
 interface MediaEntry {
 	url: string;
 	type: MediaType;
+	duration?: number;
 }
 
 interface S3Attachment {
@@ -146,6 +147,7 @@ export class MessageRoute extends BaseRoute {
 				videos = [],
 				files = [],
 				voices = [],
+				voiceDurations = [],
 				entities: rawEntities,
 			} = request.body as {
 				sessionId: string;
@@ -160,6 +162,7 @@ export class MessageRoute extends BaseRoute {
 				videos?: string[];
 				files?: string[];
 				voices?: string[];
+				voiceDurations?: number[];
 				entities?: RawMessageEntity[];
 			};
 
@@ -192,9 +195,10 @@ export class MessageRoute extends BaseRoute {
 					url,
 					type: "file" as const,
 				}));
-				const voiceMedia: MediaEntry[] = voices.map((url) => ({
+				const voiceMedia: MediaEntry[] = voices.map((url, index) => ({
 					url,
 					type: "voice" as const,
+					duration: voiceDurations[index] ?? 0,
 				}));
 
 				try {
@@ -272,6 +276,7 @@ export class MessageRoute extends BaseRoute {
 										tc,
 										group[0].url,
 										group[0].type,
+										group[0].duration,
 									);
 								const r = await tc.invoke(
 									new Api.messages.SendMedia({
