@@ -71,4 +71,36 @@ describe("POST /messages/SendMessage voice notes", () => {
 		expect(response.statusCode).toBe(200);
 		expect(sentDurations()).toEqual([0]);
 	});
+
+	it("rounds a fractional duration", async () => {
+		const response = await send({ voices: ["https://s3.test/a.oga"], voiceDurations: [2.6] });
+
+		expect(response.statusCode).toBe(200);
+		expect(sentDurations()).toEqual([3]);
+	});
+
+	it("accepts the int32 maximum", async () => {
+		const response = await send({ voices: ["https://s3.test/a.oga"], voiceDurations: [2147483647] });
+
+		expect(response.statusCode).toBe(200);
+		expect(sentDurations()).toEqual([2147483647]);
+	});
+
+	it.each([
+		["a string entry", ["7"]],
+		["a null entry", [null]],
+		["a negative entry", [-1]],
+		["an entry past int32", [2147483648]],
+		["a fraction past int32", [2147483647.6]],
+		["a non-array", 7],
+		["null", null],
+	])("rejects %s before sending anything", async (_label, voiceDurations) => {
+		const response = await send({
+			voices: ["https://s3.test/a.oga", "https://s3.test/b.oga"],
+			voiceDurations: Array.isArray(voiceDurations) ? [1, ...voiceDurations] : voiceDurations,
+		});
+
+		expect(response.statusCode).toBe(400);
+		expect(invoke).not.toHaveBeenCalled();
+	});
 });
