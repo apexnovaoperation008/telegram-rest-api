@@ -10,9 +10,13 @@ import {
 } from "../../telegram/TelegramUtils";
 import { S3UploadService } from "../../services/S3UploadService";
 
+/** DocumentAttributeAudio.duration is an int32; teleproto throws on anything larger. */
+const MAX_VOICE_DURATION = 2147483647;
+
 interface MediaEntry {
 	url: string;
 	type: MediaType;
+	duration?: number;
 }
 
 interface S3Attachment {
@@ -146,6 +150,7 @@ export class MessageRoute extends BaseRoute {
 				videos = [],
 				files = [],
 				voices = [],
+				voiceDurations = [],
 				entities: rawEntities,
 			} = request.body as {
 				sessionId: string;
@@ -160,6 +165,7 @@ export class MessageRoute extends BaseRoute {
 				videos?: string[];
 				files?: string[];
 				voices?: string[];
+				voiceDurations?: number[];
 				entities?: RawMessageEntity[];
 			};
 
@@ -168,6 +174,24 @@ export class MessageRoute extends BaseRoute {
 					return new ErrorResponse("sessionId and peer are required", 400).send(
 						reply,
 					);
+				}
+
+				// Checked before anything is sent: a bad duration on a later voice would
+				// otherwise fail after the earlier ones were delivered, and a retry
+				// would send those twice.
+				if (
+					!Array.isArray(voiceDurations) ||
+					!voiceDurations.every(
+						(duration) =>
+							Number.isFinite(duration) &&
+							duration >= 0 &&
+							duration <= MAX_VOICE_DURATION,
+					)
+				) {
+					return new ErrorResponse(
+						`voiceDurations must be an array of numbers from 0 to ${MAX_VOICE_DURATION}`,
+						400,
+					).send(reply);
 				}
 
 				const hasVisual = photos.length > 0 || videos.length > 0;
@@ -192,9 +216,10 @@ export class MessageRoute extends BaseRoute {
 					url,
 					type: "file" as const,
 				}));
-				const voiceMedia: MediaEntry[] = voices.map((url) => ({
+				const voiceMedia: MediaEntry[] = voices.map((url, index) => ({
 					url,
 					type: "voice" as const,
+					duration: Math.round(voiceDurations[index] ?? 0),
 				}));
 
 				try {
@@ -272,6 +297,7 @@ export class MessageRoute extends BaseRoute {
 										tc,
 										group[0].url,
 										group[0].type,
+										group[0].duration,
 									);
 								const r = await tc.invoke(
 									new Api.messages.SendMedia({
